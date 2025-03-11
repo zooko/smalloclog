@@ -1,0 +1,16 @@
+[package]
+name = "smalloclog"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rand = "0.9.0"
+
+[[bin]]
+name = "smalloclog_to_humanreadable"
+path = "src/smalloclog_to_humanreadable.rs"
+
+[[bin]]
+name = "testsmalloclog"
+path = "src/testsmalloclog.rs"
+
