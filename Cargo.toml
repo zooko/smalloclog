@@ -5,12 +5,16 @@ edition = "2024"
 
 [dependencies]
 rand = "0.9.0"
+smalloc = { version = "0.1.1", path = "../smalloc" }
 
 [[bin]]
 name = "smalloclog_to_humanreadable"
 path = "src/smalloclog_to_humanreadable.rs"
 
 [[bin]]
+name = "smalloclog_to_stats"
+path = "src/smalloclog_to_stats.rs"
+
+[[bin]]
 name = "testsmalloclog"
 path = "src/testsmalloclog.rs"
-

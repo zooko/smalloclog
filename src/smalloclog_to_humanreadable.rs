@@ -14,5 +14,4 @@ fn main() {
     }
     
     println!("{}", smalloclog_to_human_readable(&buffer));
-    
 }
