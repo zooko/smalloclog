@@ -6,13 +6,17 @@ use std::alloc::System;
 
 mod simplelogger;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static LOCK: AtomicBool = AtomicBool::new(false);
+
 pub struct SmallocLog { }
 
 //XXXX To read this file correctly is going to be impossible without making an assumption about the usize on the source machine...
 #[inline(always)]
 fn log_layout(layout: core::alloc::Layout) {
-    simplelogger::write("smalloclog.log", &layout.size().to_le_bytes());
-    simplelogger::write("smalloclog.log", &layout.align().to_le_bytes());
+    simplelogger::write(&layout.size().to_le_bytes());
+    simplelogger::write(&layout.align().to_le_bytes());
 }
 
 //XXXX To read this file correctly is impossible without making an assumption about the usize on the source machine...
@@ -21,24 +25,67 @@ const SO_P_SRC: usize = 8;
 
 unsafe impl GlobalAlloc for SmallocLog {
     unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
-	simplelogger::write("smalloclog.log", b"a");
+	// Spin until this thread gets the exclusive ownership of LOCK:
+	loop {
+	    let result = LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed);
+	    match result {
+		Ok(_x) => { /* XXX */ break; },
+		Err(_x) =>  { /* XXX */ }
+	    }
+	}
+
+	//XXXwhile LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).unwrap() { }
+
+	simplelogger::write(b"a");
 	log_layout(layout);
 	let p = unsafe { System.alloc(layout) };
-	simplelogger::write("smalloclog.log", &p.addr().to_le_bytes());
+	simplelogger::write(&p.addr().to_le_bytes());
+
+	// ok we're done, release the lock
+	LOCK.store(false, Ordering::Release);
+
 	p
     }
+
     unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
-	simplelogger::write("smalloclog.log", b"d");
-	simplelogger::write("smalloclog.log", &ptr.addr().to_le_bytes());
+	// Spin until this thread gets the exclusive ownership of LOCK:
+	loop {
+	    let result = LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed);
+	    match result {
+		Ok(_x) => { /* XXX */break; },
+		Err(_x) =>  { /* XXX */ }
+	    }
+	}
+
+	simplelogger::write(b"d");
+	simplelogger::write(&ptr.addr().to_le_bytes());
+
+	// ok we're done, release the lock
+	LOCK.store(false, Ordering::Release);
+
 	unsafe { System.dealloc(ptr, layout) }
     }
+
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-	simplelogger::write("smalloclog.log", b"r");
-	simplelogger::write("smalloclog.log", &ptr.addr().to_le_bytes());
+	// Spin until this thread gets the exclusive ownership of LOCK:
+	loop {
+	    let result = LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed);
+	    match result {
+		Ok(_x) => { /* XXX */ break; },
+		Err(_x) =>  { /* XXX */ }
+	    }
+	}
+
+	simplelogger::write(b"r");
+	simplelogger::write(&ptr.addr().to_le_bytes());
 	log_layout(layout);
-	simplelogger::write("smalloclog.log", &new_size.to_le_bytes());
+	simplelogger::write(&new_size.to_le_bytes());
 	let newptr = unsafe { System.realloc(ptr, layout, new_size) };
-	simplelogger::write("smalloclog.log", &newptr.addr().to_le_bytes());
+	simplelogger::write(&newptr.addr().to_le_bytes());
+
+	// ok we're done, release the lock
+	LOCK.store(false, Ordering::Release);
+
 	newptr
     }
 }
