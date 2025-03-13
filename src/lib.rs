@@ -140,6 +140,8 @@ pub fn smalloclog_to_human_readable(sml: &[u8]) -> String {
 
 use std::collections::HashMap;
 
+use thousands::Separable;
+
 pub fn smalloclog_to_stats(sml: &[u8]) -> String {
     const NUM_SCSU8: u8=30;
     const NUM_SCS: usize = NUM_SCSU8 as usize;
@@ -157,7 +159,13 @@ pub fn smalloclog_to_stats(sml: &[u8]) -> String {
     let mut oversize_totalallocs = 0;
     let mut oversize_highwater = 0;
     
-    let mut ptr2sc: HashMap<usize, u8> = HashMap::with_capacity(10000000);
+    let mut realloc_grow = 0;
+    let mut realloc_shrink = 0;
+    let mut realloc_same = 0;
+
+    let mut reallocon2c: HashMap<(usize, usize), u64> = HashMap::with_capacity(100_000_000);
+    
+    let mut ptr2sc: HashMap<usize, u8> = HashMap::with_capacity(10_000_000);
 
     let mut i: usize = 0; // index of next byte to read
 
@@ -235,6 +243,17 @@ pub fn smalloclog_to_stats(sml: &[u8]) -> String {
 	    assert!(! ptr2sc.contains_key(&newptr));
 	    ptr2sc.insert(newptr, newsc);
 
+	    if newsc > origsc {
+		realloc_grow += 1
+	    } else if newsc < origsc {
+		realloc_shrink += 1
+	    } else {
+		realloc_same += 1
+	    }
+
+	    let realloconkey = (siz, newsiz); // XXX note: neglecting alignment here, because it probably won't matter much to the results, and because I can't think of a nice way to take into account while still merging same-sized reallocs...
+	    *reallocon2c.entry(realloconkey).or_insert(0) += 1;
+	    
 	    if newscu > NUM_SCS {
 		if origscu != newscu {
 		    oversize_totalallocs += 1;
@@ -257,10 +276,31 @@ pub fn smalloclog_to_stats(sml: &[u8]) -> String {
 
     let mut res: String = String::new();
     for i in 0..NUM_SCS {
-	writeln!(res, "sc: {}, highwater-count: {}, tot: {}", i, slabs_highwater[i], slabs_totallocs[i]).unwrap();
+	writeln!(res, "sc: {:>2}, highwater-count: {:>10}, tot: {:>10}", i, slabs_highwater[i].separate_with_commas(), slabs_totallocs[i].separate_with_commas()).unwrap();
     }
-    writeln!(res, "oversize: highwater-count: {}, tot: {}", oversize_highwater, oversize_totalallocs).unwrap();
 
+    writeln!(res, "oversize: highwater-count: {:>10}, tot: {:>10}", oversize_highwater.separate_with_commas(), oversize_totalallocs.separate_with_commas()).unwrap();
+    writeln!(res, "realloc grow: {:>6}, shrink: {:>10}, same: {:>10}", realloc_grow.separate_with_commas(), realloc_shrink.separate_with_commas(), realloc_same.separate_with_commas()).unwrap();
+
+    let mut reallocon2c_entries: Vec<(&(usize, usize), &u64)> = reallocon2c.iter().collect();
+    reallocon2c_entries.sort_by(|a, b| a.1.cmp(b.1));
+
+    let mut bytes_moved = 0;
+    let mut bytes_saved_from_move = 0;
+    for (sizs, count) in reallocon2c_entries {
+        write!(res, "{:>10} * {:>10} ({:>2}) -> {:>10} ({:>2})", count.separate_with_commas(), sizs.0.separate_with_commas(), layout_to_sizeclass(sizs.0, 1), sizs.1.separate_with_commas(), layout_to_sizeclass(sizs.1, 1)).ok();
+	if layout_to_sizeclass(sizs.1, 1) > layout_to_sizeclass(sizs.0, 1) {
+	    let bm: u128 = (*count as u128) * (sizs.0 as u128);
+	    writeln!(res, " + {:>12}", bm.separate_with_commas()).ok();
+	    bytes_moved += bm;
+	} else {
+	    let bs: u128 = (*count as u128) * (sizs.0 as u128);
+	    writeln!(res, " _ {:>12}", bs.separate_with_commas()).ok();
+	    bytes_saved_from_move += bs;
+	}
+    }
+
+    writeln!(res, "bytes moved: {}, bytes saved from move: {}", bytes_moved.separate_with_commas(), bytes_saved_from_move.separate_with_commas()).ok();
     res
 }
 
