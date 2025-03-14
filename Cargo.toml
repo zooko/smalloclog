@@ -4,8 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bytesize = "2.0.1"
 rand = "0.9.0"
-smalloc = { version = "0.1.1", path = "../smalloc" }
+smalloc = { version = "0.1.2", path = "/Users/donaldturnworth/playground/smalloc" }
 thousands = "0.2.0"
 
 [[bin]]
