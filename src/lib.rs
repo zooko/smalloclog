@@ -1,10 +1,37 @@
+use std::fs::{File};
+use std::io::Write;
+use std::io;
+
+use std::primitive::usize;
+
+static mut MY_FILE_OPT: Option<File> = None;
+
+#[allow(static_mut_refs)]
+fn write(bs: &[u8]) -> Result<(), io::Error> {
+    // This function is called only from within a lock (a dumb compare-and-exchange spinlock). So we can use non-atomic test and set on MY_FILE_OPT.
+    unsafe {
+	if let None = MY_FILE_OPT.as_mut() {
+	    let mut new_file = File::create("smalloclog.log")?;
+	    new_file.write_all(b"i")?;
+
+	    assert!(std::primitive::usize::BITS< 256);
+	    let bytes_in_usize: u8 = (std::primitive::usize::BITS / 8) as u8;
+
+	    new_file.write_all(&[bytes_in_usize])?;
+
+	    MY_FILE_OPT = Some(new_file);
+	};
+
+	MY_FILE_OPT.as_mut().expect("x").write_all(bs)?;
+	Ok(())
+    }
+}
+
 use core::{
     alloc::{GlobalAlloc, Layout}
 };
 
 use std::alloc::System;
-
-mod simplelogger;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -12,24 +39,14 @@ static LOCK: AtomicBool = AtomicBool::new(false);
 
 use smalloc::layout_to_sizeclass;
 
-//XXXpub(crate) use firestorm::{
-//XXX    profile_fn,
-//XXX    profile_method,
-//XXX    profile_section
-//XXX};
-
 pub struct SmallocLog { }
 
-//XXXX To read this file correctly is going to be impossible without making an assumption about the usize on the source machine...
 #[inline(always)]
-fn log_layout(layout: core::alloc::Layout) {
-    simplelogger::write(&layout.size().to_le_bytes());
-    simplelogger::write(&layout.align().to_le_bytes());
+fn log_layout(layout: core::alloc::Layout) -> Result<(), io::Error> {
+    write(&layout.size().to_le_bytes())?;
+    write(&layout.align().to_le_bytes())?;
+    Ok(())
 }
-
-//XXXX To read this file correctly is impossible without making an assumption about the usize on the source machine...
-const SO_U_SRC: usize = 8;
-const SO_P_SRC: usize = 8;
 
 //XXXX add detection of CPU number
 unsafe impl GlobalAlloc for SmallocLog {
@@ -43,10 +60,10 @@ unsafe impl GlobalAlloc for SmallocLog {
 	    }
 	}
 
-	simplelogger::write(b"a");
-	log_layout(layout);
+	write(b"a").unwrap();
+	log_layout(layout).unwrap();
 	let p = unsafe { System.alloc(layout) };
-	simplelogger::write(&p.addr().to_le_bytes());
+	write(&p.addr().to_le_bytes()).unwrap();
 
 	// ok we're done, release the lock
 	LOCK.store(false, Ordering::Release);
@@ -64,8 +81,8 @@ unsafe impl GlobalAlloc for SmallocLog {
 	    }
 	}
 
-	simplelogger::write(b"d");
-	simplelogger::write(&ptr.addr().to_le_bytes());
+	write(b"d").unwrap();
+	write(&ptr.addr().to_le_bytes()).unwrap();
 
 	// ok we're done, release the lock
 	LOCK.store(false, Ordering::Release);
@@ -83,12 +100,12 @@ unsafe impl GlobalAlloc for SmallocLog {
 	    }
 	}
 
-	simplelogger::write(b"r");
-	simplelogger::write(&ptr.addr().to_le_bytes());
-	log_layout(layout);
-	simplelogger::write(&new_size.to_le_bytes());
+	write(b"r").unwrap();
+	write(&ptr.addr().to_le_bytes()).unwrap();
+	log_layout(layout).unwrap();
+	write(&new_size.to_le_bytes()).unwrap();
 	let newptr = unsafe { System.realloc(ptr, layout, new_size) };
-	simplelogger::write(&newptr.addr().to_le_bytes());
+	write(&newptr.addr().to_le_bytes()).unwrap();
 
 	// ok we're done, release the lock
 	LOCK.store(false, Ordering::Release);
@@ -97,38 +114,45 @@ unsafe impl GlobalAlloc for SmallocLog {
     }
 }
 
-use std::fmt::Write;
+use std::fmt::Write as FmtWrite;
+
 pub fn smalloclog_to_human_readable(sml: &[u8]) -> String {
     let mut i: usize = 0; // index of next byte to read
     let mut res: String = String::new();
 
+    assert!(sml[i] == b'i', "something unexpected in smalloclog");
+    i += 1;
+    let sou: usize = sml[i] as usize; // source usize
+    i += 1;
+    assert!(sou <= 32); // looking forward to CPU arches with 256-bit pointers
+	
     while i < sml.len() {
 	if sml[i] == b'a' {
 	    i += 1;
-	    let siz: usize = usize::from_le_bytes(sml[i..i+SO_U_SRC].try_into().unwrap());
-	    i += SO_U_SRC;
-	    let ali: usize = usize::from_le_bytes(sml[i..i+SO_U_SRC].try_into().unwrap());
-	    i += SO_U_SRC;
-	    let ptr: usize = usize::from_le_bytes(sml[i..i+SO_P_SRC].try_into().unwrap());
-	    i += SO_P_SRC;
+	    let siz: usize = usize::from_le_bytes(sml[i..i+sou].try_into().unwrap());
+	    i += sou;
+	    let ali: usize = usize::from_le_bytes(sml[i..i+sou].try_into().unwrap());
+	    i += sou;
+	    let ptr: usize = usize::from_le_bytes(sml[i..i+sou].try_into().unwrap());
+	    i += sou;
 	    writeln!(res, "alloc({}, {}) -> 0x{:x}", siz, ali, ptr).ok();
 	} else if sml[i] == b'd' {
 	    i += 1;
-	    let ptr: usize = usize::from_le_bytes(sml[i..i+SO_P_SRC].try_into().unwrap());
-	    i += SO_P_SRC;
+	    let ptr: usize = usize::from_le_bytes(sml[i..i+sou].try_into().unwrap());
+	    i += sou;
 	    writeln!(res, "dealloc(0x{:x})", ptr).ok();
 	} else if sml[i] == b'r' {
 	    i += 1;
-	    let ptr: usize = usize::from_le_bytes(sml[i..i+SO_P_SRC].try_into().unwrap());
-	    i += SO_P_SRC;
-	    let siz: usize = usize::from_le_bytes(sml[i..i+SO_U_SRC].try_into().unwrap());
-	    i += SO_U_SRC;
-	    let ali: usize = usize::from_le_bytes(sml[i..i+SO_U_SRC].try_into().unwrap());
-	    i += SO_U_SRC;
-	    let newsiz: usize = usize::from_le_bytes(sml[i..i+SO_U_SRC].try_into().unwrap());
-	    i += SO_U_SRC;
-	    let newptr: usize = usize::from_le_bytes(sml[i..i+SO_P_SRC].try_into().unwrap());
-	    i += SO_P_SRC;
+	    let ptr: usize = usize::from_le_bytes(sml[i..i+sou].try_into().unwrap());
+	    i += sou;
+	    let siz: usize = usize::from_le_bytes(sml[i..i+sou].try_into().unwrap());
+	    i += sou;
+	    let ali: usize = usize::from_le_bytes(sml[i..i+sou].try_into().unwrap());
+	    i += sou;
+	    let newsiz: usize = usize::from_le_bytes(sml[i..i+sou].try_into().unwrap());
+	    i += sou;
+	    let newptr: usize = usize::from_le_bytes(sml[i..i+sou].try_into().unwrap());
+	    i += sou;
 	    writeln!(res, "realloc(0x{:x}, {}, {}, {}) -> 0x{:x}", ptr, siz, ali, newsiz, newptr).ok();
 	} else {
 	    panic!("Found something unexpected in smalloclog. sml[{}]: {}, first part: {}, remainder: 0x{:?}", i,  sml[i], res, &sml[i..]);
@@ -169,15 +193,21 @@ pub fn smalloclog_to_stats(sml: &[u8]) -> String {
 
     let mut i: usize = 0; // index of next byte to read
 
+    assert!(sml[i] == b'i', "something unexpected in smalloclog");
+    i += 1;
+    let sou: usize = sml[i] as usize; // source usize
+    i += 1;
+    assert!(sou <= 32); // looking forward to CPU arches with 256-bit pointers
+	
     while i < sml.len() {
 	if sml[i] == b'a' {
 	    i += 1;
-	    let siz: usize = usize::from_le_bytes(sml[i..i+SO_U_SRC].try_into().unwrap());
-	    i += SO_U_SRC;
-	    let ali: usize = usize::from_le_bytes(sml[i..i+SO_U_SRC].try_into().unwrap());
-	    i += SO_U_SRC;
-	    let ptr: usize = usize::from_le_bytes(sml[i..i+SO_P_SRC].try_into().unwrap());
-	    i += SO_P_SRC;
+	    let siz: usize = usize::from_le_bytes(sml[i..i+sou].try_into().unwrap());
+	    i += sou;
+	    let ali: usize = usize::from_le_bytes(sml[i..i+sou].try_into().unwrap());
+	    i += sou;
+	    let ptr: usize = usize::from_le_bytes(sml[i..i+sou].try_into().unwrap());
+	    i += sou;
 
 	    let sc = layout_to_sizeclass(siz, ali);
 	    let scu = sc as usize;
@@ -196,8 +226,8 @@ pub fn smalloclog_to_stats(sml: &[u8]) -> String {
 	    }
 	} else if sml[i] == b'd' {
 	    i += 1;
-	    let ptr: usize = usize::from_le_bytes(sml[i..i+SO_P_SRC].try_into().unwrap());
-	    i += SO_P_SRC;
+	    let ptr: usize = usize::from_le_bytes(sml[i..i+sou].try_into().unwrap());
+	    i += sou;
 
 	    assert!(ptr2sc.contains_key(&ptr));
 
@@ -213,16 +243,16 @@ pub fn smalloclog_to_stats(sml: &[u8]) -> String {
 	    ptr2sc.remove(&ptr);
 	} else if sml[i] == b'r' {
 	    i += 1;
-	    let ptr: usize = usize::from_le_bytes(sml[i..i+SO_P_SRC].try_into().unwrap());
-	    i += SO_P_SRC;
-	    let siz: usize = usize::from_le_bytes(sml[i..i+SO_U_SRC].try_into().unwrap());
-	    i += SO_U_SRC;
-	    let ali: usize = usize::from_le_bytes(sml[i..i+SO_U_SRC].try_into().unwrap());
-	    i += SO_U_SRC;
-	    let newsiz: usize = usize::from_le_bytes(sml[i..i+SO_U_SRC].try_into().unwrap());
-	    i += SO_U_SRC;
-	    let newptr: usize = usize::from_le_bytes(sml[i..i+SO_P_SRC].try_into().unwrap());
-	    i += SO_P_SRC;
+	    let ptr: usize = usize::from_le_bytes(sml[i..i+sou].try_into().unwrap());
+	    i += sou;
+	    let siz: usize = usize::from_le_bytes(sml[i..i+sou].try_into().unwrap());
+	    i += sou;
+	    let ali: usize = usize::from_le_bytes(sml[i..i+sou].try_into().unwrap());
+	    i += sou;
+	    let newsiz: usize = usize::from_le_bytes(sml[i..i+sou].try_into().unwrap());
+	    i += sou;
+	    let newptr: usize = usize::from_le_bytes(sml[i..i+sou].try_into().unwrap());
+	    i += sou;
 
 	    assert!(ptr2sc.contains_key(&ptr));
 
@@ -302,17 +332,5 @@ pub fn smalloclog_to_stats(sml: &[u8]) -> String {
 
     writeln!(res, "bytes moved: {}, bytes saved from move: {}", bytes_moved.separate_with_commas(), bytes_saved_from_move.separate_with_commas()).ok();
     res
-}
-
-#[cfg(test)]
-mod tests {
-
-    #[test]
-    fn read_file_1() {
-	//Xxx    let file_path = "test_file.smalloclog";
-	//XXX        let expected_contents = b"";
-
-    }
-
 }
 
