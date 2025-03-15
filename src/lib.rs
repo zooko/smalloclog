@@ -102,7 +102,7 @@ unsafe impl GlobalAlloc for SmallocLog {
 	    }
 	}
 
-	let mut entry: [u8; 1+3*U] = [0; 1+3*U];
+	let mut entry: [u8; 1+1*U] = [0; 1+1*U];
 	let e: &mut [u8] = &mut entry;
 	let mut i = 0;
 	e[i] = b'd'; i += 1; // dealloc
