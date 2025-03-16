@@ -1,5 +1,3 @@
-#![feature(file_buffered)]
-
 use std::fs::{File};
 use std::io::Write;
 
@@ -27,18 +25,17 @@ use smalloc::{layout_to_sizeclass,sizeclass_to_slotsize};
 pub struct SmallocLog { }
 
 
-use std::io::BufWriter;
 use std::primitive::usize;
 const U_U8: u8 = (std::primitive::usize::BITS / 8) as u8; // number of bytes for a usize
 const U: usize = U_U8 as usize;
-static mut MY_FILE_OPT: Option<BufWriter<File>> = None;
+static mut MY_FILE_OPT: Option<File> = None;
 #[allow(static_mut_refs)] // This function is called only from within a lock (a dumb compare-and-exchange spinlock). So we can use non-atomic test and set on MY_FILE_OPT.
 fn create_my_file() -> () {
     // If MY_FILE_OPT doesn't already have a File in it, create a File, write the smalloclog header to it, and store it in MY_FILE_OPT.
 
     unsafe {
 	if MY_FILE_OPT.is_none() {
-	    let mut new_file = File::create_buffered("smalloclog.log").unwrap();
+	    let mut new_file = File::create("smalloclog.log").unwrap();
 
 	    assert!(U <= 32); // looking forward to 256-bit CPUs archs. But not 512-bit CPU archs.
 
