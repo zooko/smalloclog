@@ -1,17 +1,16 @@
 
-use std::io::{self, Read};
+// use std::io::{self, Read};
+use std::io::{self, BufWriter};
 
-use smalloclog::smalloclog_to_human_readable;
+mod parser;
+use parser::{Logger, Parser, slurp};
 
 fn main() {
-    let mut buffer = Vec::new();
-    let stdin = io::stdin();
-    let mut handle = stdin.lock();
-    
-    if let Err(e) = handle.read_to_end(&mut buffer) {
-        eprintln!("Failed to read from stdin: {}", e);
-        return;
-    }
-    
-    println!("{}", smalloclog_to_human_readable(&buffer));
+    let mut stdin = io::stdin().lock();
+    let stdout = BufWriter::new(std::io::stdout());
+    let stdout_logger = Logger::new(stdout);
+    let mut parser = Parser::new(stdout_logger);
+
+    slurp(&mut stdin, &mut parser);
 }
+

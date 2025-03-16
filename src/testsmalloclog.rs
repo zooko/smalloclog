@@ -3,6 +3,7 @@ use rand::Rng;
 const MAX_U128: u128 = 2u128.pow(39);
 const MAX_U8: u8 = 2u8.pow(6);
 
+
 use smalloclog::SmallocLog;
 
 #[global_allocator]
@@ -11,6 +12,7 @@ static SMALLOCLOG: SmallocLog = SmallocLog {};
 fn main() {
 
     println!("Hello, world!");
+
     let mut r = rand::rng();
 
     let num_args: usize = r.random_range(0..2usize.pow(20));

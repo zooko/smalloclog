@@ -1,35 +1,37 @@
-use std::io::{self, Read};
+use std::io::{self, BufRead};
 
-use smalloclog::smalloclog_to_stats;
+mod parser;
+// use parser::{Logger,Parser};
+use parser::{Parser};
 
 //XXXuse firestorm::profile_fn;
 
-fn get_and_print() -> () {
-//XXX    let mut buffer: VecDeque<u8> = VecDeque::with_capacity(2usize.pow(20));
-    let mut buffer = Vec::new();
-
-//XXX    let mut buffer: VecDeque<u8> = VecDeque::with_capacity(2usize.pow(20));
-
-    let stdin = io::stdin();
-    let mut handle = stdin.lock();
-
+//XXXfn get_and_print() -> () {
+//XXX    let stats = Logger::new();
+//XXX    let parser = Parser::new(stats);
+//XXX
+//XXX    let stdin = io::stdin();
+//XXX    let mut lock = stdin.lock();   
+//XXX
 //XXX    loop {
-//XXX	buffer.extend_from_slice(xxx);
+//XXX	let buffer = lock.fill_buf().unwrap();
+//XXX
+//XXX	let len = buffer.len();
+//XXX	if len == 0 {
+//XXX	    // Apparently this is how we know that the stdin is closed!?
+//XXX	    println!("xxx len == 0");
+//XXX	    break;
+//XXX	}
+//XXX
+//XXX	println!("xxx Buffer contains {} bytes: {:?}", len, &buffer[..len]);
+//XXX
+//XXX	let processed = parser.try_to_consume_bytes(buffer);
+//XXX	println!("xxx processed: {}", processed);
+//XXX
+//XXX	lock.consume(processed);
 //XXX    }
-    
-    if let Err(e) = handle.read_to_end(&mut buffer) {
-        eprintln!("Failed to read from stdin: {}", e);
-        return;
-    }
-    
-    println!("{}", smalloclog_to_stats(&buffer));
-}
-
-
-fn main() {
-    get_and_print();
-}
-
-//XXX#[async_std::main]
-//XXXfn main() -> std::io::Result<()> {
-//XXX};
+//XXX}
+//XXX
+//XXXfn main() {
+//XXX    get_and_print();
+//XXX}
