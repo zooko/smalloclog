@@ -200,6 +200,8 @@ pub struct Parser<T: EntryConsumerTrait> {
     entryconsumer: T,
     consumedheader: bool,
     sou: usize,
+
+    // How many bytes do we need to read to decode each of these 4 things:
     chunk_size_header: usize,
     chunk_size_alloc: usize,
     chunk_size_free: usize,
@@ -236,7 +238,7 @@ impl<T: EntryConsumerTrait> Parser<T> {
 	    return 0;
 	}
 
-	assert!(bs[i] == b'3', "This version of smalloclog can read only version 3 smallocloc files.");
+	assert!(bs[i] == b'3', "This version of smalloclog can read only version 3 smalloclog files.");
 	i += 1;
 	self.consumedheader = true;
 	self.sou = bs[i] as usize; // source usize
