@@ -53,7 +53,11 @@ pub struct Statser<W: Write> {
     oversize_totalallocs: usize,
     oversize_highwater: usize,
     reallocon2c: HashMap<(usize, usize), u64>,
-    ptr2sc: HashMap<usize, u8>
+    ptr2sc: HashMap<usize, u8>,
+
+    // This is just to keep you entertained and show you that it is still working while it is processing large smalloclog files into stats:
+    oversize_highwater_prev_stderr: usize,
+    slabs_highwater_prev_stderr: Vec<usize>
 }
 
 use bytesize::ByteSize;
@@ -72,9 +76,11 @@ impl<W:Write> Statser<W> {
 	    slabs_now: Vec::with_capacity(NUM_SCS),
 	    slabs_totallocs: Vec::with_capacity(NUM_SCS),
 	    slabs_highwater: Vec::with_capacity(NUM_SCS),
+	    slabs_highwater_prev_stderr: Vec::with_capacity(NUM_SCS),
 	    oversize_now: 0,
 	    oversize_totalallocs: 0,
 	    oversize_highwater: 0,
+	    oversize_highwater_prev_stderr: 0,
 	    reallocon2c: HashMap::with_capacity(100_000_000),
 	    ptr2sc: HashMap::with_capacity(100_000_000)
 	};
@@ -82,6 +88,7 @@ impl<W:Write> Statser<W> {
 	ns.slabs_now.resize(NUM_SCS, 0); // initialize elements to 0
 	ns.slabs_totallocs.resize(NUM_SCS, 0); // initialize elements to 0
 	ns.slabs_highwater.resize(NUM_SCS, 0); // initialize elements to 0
+	ns.slabs_highwater_prev_stderr.resize(NUM_SCS, 0); // initialize elements to 0
 
 	eprintln!("{:>4} {:>10} {:>11} {:>15}", "sc", "size", "highwater", "tot");
 	eprintln!("{:>4} {:>10} {:>11} {:>15}", "--", "----", "---------", "---");
@@ -93,7 +100,7 @@ impl<W:Write> Statser<W> {
 	writeln!(self.w, "{:>4} {:>10} {:>11} {:>15}", "sc", "size", "highwater", "tot").unwrap();
 	writeln!(self.w, "{:>4} {:>10} {:>11} {:>15}", "--", "----", "---------", "---").unwrap();
 	for i in 0..NUM_SCS {
-	    writeln!(self.w, "{:>4} {:>10} {:>11} {:>13}", i, conv(sizeclass_to_slotsize(i as u8) as u128), self.slabs_highwater[i].separate_with_commas(), self.slabs_totallocs[i].separate_with_commas()).unwrap();
+	    writeln!(self.w, "{:>4} {:>10} {:>11} {:>15}", i, conv(sizeclass_to_slotsize(i as u8) as u128), self.slabs_highwater[i].separate_with_commas(), self.slabs_totallocs[i].separate_with_commas()).unwrap();
 	}
 
 
@@ -135,14 +142,25 @@ impl<W: Write> EntryConsumerTrait for Statser<W> {
 		    self.oversize_now += 1;
 		    if self.oversize_now > self.oversize_highwater {
 			self.oversize_highwater = self.oversize_now;
-			eprintln!(">{:>3} >{:>9} {:>11} {:>15}", NUM_SCS, conv(sizeclass_to_slotsize((NUM_SCS-1) as u8) as u128), self.oversize_highwater, self.oversize_totalallocs);
+
+			// This is just to keep you entertained and show you that it is still working while it is processing large smalloclog files into stats:
+			if self.oversize_highwater > 2*self.oversize_highwater_prev_stderr {
+			    eprintln!(">{:>3} >{:>9} {:>11} {:>15}", NUM_SCS, conv(sizeclass_to_slotsize((NUM_SCS-1) as u8) as u128), self.oversize_highwater, self.oversize_totalallocs);
+			    self.oversize_highwater_prev_stderr = self.oversize_highwater;
+			}
 		    }
 		} else {
 		    self.slabs_totallocs[scu] += 1;
 		    self.slabs_now[scu] += 1;
 		    if self.slabs_now[scu] > self.slabs_highwater[scu] {
 			self.slabs_highwater[scu] = self.slabs_now[scu];
-			eprintln!("{:>4} {:>10} {:>11} {:>13}", scu, conv(sizeclass_to_slotsize(scu as u8) as u128), self.slabs_highwater[scu].separate_with_commas(), self.slabs_totallocs[scu].separate_with_commas());
+
+			// This is just to keep you entertained and show you that it is still working while it is processing large smalloclog files into stats:
+			if self.slabs_highwater[scu] > 2*self.slabs_highwater_prev_stderr[scu] {
+			    self.slabs_highwater_prev_stderr[scu] = self.slabs_highwater[scu];
+
+			    eprintln!("{:>4} {:>10} {:>11} {:>15}", scu, conv(sizeclass_to_slotsize(scu as u8) as u128), self.slabs_highwater[scu].separate_with_commas(), self.slabs_totallocs[scu].separate_with_commas());
+			}
 		    }
 		}
 	    }
@@ -191,7 +209,12 @@ impl<W: Write> EntryConsumerTrait for Statser<W> {
 		    self.oversize_now += 1;
 		    if self.oversize_now > self.oversize_highwater {
 			self.oversize_highwater = self.oversize_now;
-			eprintln!(">{:>3} >{:>9} {:>11} {:>15}", NUM_SCS, conv(sizeclass_to_slotsize((NUM_SCS-1) as u8) as u128), self.oversize_highwater, self.oversize_totalallocs);
+
+			// This is just to keep you entertained and show you that it is still working while it is processing large smalloclog files into stats:
+			if self.oversize_highwater > 2*self.oversize_highwater_prev_stderr {
+			    eprintln!(">{:>3} >{:>9} {:>11} {:>15}", NUM_SCS, conv(sizeclass_to_slotsize((NUM_SCS-1) as u8) as u128), self.oversize_highwater, self.oversize_totalallocs);
+			    self.oversize_highwater_prev_stderr = self.oversize_highwater;
+			}
 		    }
 		} else {
 		    if origscu != newscu {
@@ -201,7 +224,12 @@ impl<W: Write> EntryConsumerTrait for Statser<W> {
 		    self.slabs_now[newscu] += 1;
 		    if self.slabs_now[newscu] > self.slabs_highwater[newscu] {
 			self.slabs_highwater[newscu] = self.slabs_now[newscu];
-			eprintln!("{:>4} {:>10} {:>11} {:>13}", newscu, conv(sizeclass_to_slotsize(newscu as u8) as u128), self.slabs_highwater[newscu].separate_with_commas(), self.slabs_totallocs[newscu].separate_with_commas());
+
+			// This is just to keep you entertained and show you that it is still working while it is processing large smalloclog files into stats:
+			if self.slabs_highwater[newscu] > 2*self.slabs_highwater_prev_stderr[newscu] {
+			    eprintln!("{:>4} {:>10} {:>11} {:>15}", newscu, conv(sizeclass_to_slotsize(newscu as u8) as u128), self.slabs_highwater[newscu].separate_with_commas(), self.slabs_totallocs[newscu].separate_with_commas());
+			    self.slabs_highwater_prev_stderr[newscu] = self.slabs_highwater[newscu]
+			}
 		    }
 		}
 	    }
