@@ -1,16 +1,14 @@
-
-// use std::io::{self, Read};
 use std::io::{self, BufWriter};
 
 mod parser;
 use parser::{Logger, Parser, slurp};
 
 fn main() {
-    let mut stdin = io::stdin().lock();
-    let stdout = BufWriter::new(std::io::stdout());
-    let stdout_logger = Logger::new(stdout);
-    let mut parser = Parser::new(stdout_logger);
+    let stdin = io::stdin().lock();
+    let stdo = BufWriter::new(std::io::stdout());
+    let logger = Logger::new(stdo);
+    let parser = Parser::new(logger);
 
-    slurp(&mut stdin, &mut parser);
+    slurp(stdin, parser);
 }
 

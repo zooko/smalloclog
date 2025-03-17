@@ -13,9 +13,9 @@ thousands = "0.2.0"
 name = "smalloclog_to_humanreadable"
 path = "src/smalloclog_to_humanreadable.rs"
 
-# ; //XXX[[bin]]
-# ; //XXXname = "smalloclog_to_stats"
-# ; //XXXpath = "src/smalloclog_to_stats.rs"
+[[bin]]
+name = "smalloclog_to_stats"
+path = "src/smalloclog_to_stats.rs"
 
 [[bin]]
 name = "testsmalloclog"
