@@ -34,18 +34,21 @@ impl<W: Write> EntryConsumerTrait for Logger<W> {
 	}.unwrap()
     }
     fn done(&mut self) {
-	writeln!(self.w, "done:-)!");
+	writeln!(self.w, "done:-)!").ok();
     }
 }
 
 use std::collections::HashMap;
 
-// XXX my first experiment with explicit lifetimes... My intent here is that Statser and the w write object will both be allocated in main(), so I just want to convince Rust that Statser cannot outlive w...
 pub struct Statser<W: Write> {
     w: W,
+
+    // How many allocations have been requested out of each of these slabs (each "slab" having a fixed number of fixed-size "slots").
     slabs_now: Vec<usize>,
     slabs_totallocs: Vec<usize>,
     slabs_highwater: Vec<usize>,
+
+    // How many 
     oversize_now: usize,
     oversize_totalallocs: usize,
     oversize_highwater: usize,
@@ -80,17 +83,19 @@ impl<W:Write> Statser<W> {
 	ns.slabs_totallocs.resize(NUM_SCS, 0); // initialize elements to 0
 	ns.slabs_highwater.resize(NUM_SCS, 0); // initialize elements to 0
 
+	eprintln!("{:>4} {:>10} {:>11} {:>15}", "sc", "size", "highwater", "tot");
+	eprintln!("{:>4} {:>10} {:>11} {:>15}", "--", "----", "---------", "---");
+
 	ns
     }
 
     fn write_stats(&mut self) {
-	writeln!(self.w, "{:>4} {:>10} {:>9} {:>13}", "sc", "size", "highwater", "tot").unwrap();
-	writeln!(self.w, "{:>4} {:>10} {:>9} {:>13}", "--", "----", "---------", "---").unwrap();
+	writeln!(self.w, "{:>4} {:>10} {:>11} {:>15}", "sc", "size", "highwater", "tot").unwrap();
+	writeln!(self.w, "{:>4} {:>10} {:>11} {:>15}", "--", "----", "---------", "---").unwrap();
 	for i in 0..NUM_SCS {
-	    writeln!(self.w, "{:>4} {:>10} {:>9} {:>13}", i, conv(sizeclass_to_slotsize(i as u8) as u128), self.slabs_highwater[i].separate_with_commas(), self.slabs_totallocs[i].separate_with_commas()).unwrap();
+	    writeln!(self.w, "{:>4} {:>10} {:>11} {:>13}", i, conv(sizeclass_to_slotsize(i as u8) as u128), self.slabs_highwater[i].separate_with_commas(), self.slabs_totallocs[i].separate_with_commas()).unwrap();
 	}
 
-	writeln!(self.w, ">{:>3} >{:>9} {:>9} {:>13}", NUM_SCS, conv(sizeclass_to_slotsize((NUM_SCS-1) as u8) as u128), self.oversize_highwater, self.oversize_totalallocs).unwrap();
 
 	let mut reallocon2c_entries: Vec<(&(usize, usize), &u64)> = self.reallocon2c.iter().collect();
 	reallocon2c_entries.sort_by(|a, b| a.1.cmp(b.1));
@@ -115,7 +120,7 @@ impl<W:Write> Statser<W> {
 }
 
 use smalloc::{layout_to_sizeclass, sizeclass_to_slotsize};
-impl<'a, W: Write> EntryConsumerTrait for Statser<W> {
+impl<W: Write> EntryConsumerTrait for Statser<W> {
     fn consume_entry(&mut self, e: &Entry) {
 	match e {
 	    Entry::Alloc { reqsiz, reqalign, resptr } => {
@@ -128,11 +133,17 @@ impl<'a, W: Write> EntryConsumerTrait for Statser<W> {
 		if scu >= NUM_SCS {
 		    self.oversize_totalallocs += 1;
 		    self.oversize_now += 1;
-		    self.oversize_highwater = self.oversize_highwater.max(self.oversize_now);
+		    if self.oversize_now > self.oversize_highwater {
+			self.oversize_highwater = self.oversize_now;
+			eprintln!(">{:>3} >{:>9} {:>11} {:>15}", NUM_SCS, conv(sizeclass_to_slotsize((NUM_SCS-1) as u8) as u128), self.oversize_highwater, self.oversize_totalallocs);
+		    }
 		} else {
 		    self.slabs_totallocs[scu] += 1;
 		    self.slabs_now[scu] += 1;
-		    self.slabs_highwater[scu] = self.slabs_highwater[scu].max(self.slabs_now[scu]);
+		    if self.slabs_now[scu] > self.slabs_highwater[scu] {
+			self.slabs_highwater[scu] = self.slabs_now[scu];
+			eprintln!("{:>4} {:>10} {:>11} {:>13}", scu, conv(sizeclass_to_slotsize(scu as u8) as u128), self.slabs_highwater[scu].separate_with_commas(), self.slabs_totallocs[scu].separate_with_commas());
+		    }
 		}
 	    }
 	    Entry::Free { oldptr } => {
@@ -153,7 +164,7 @@ impl<'a, W: Write> EntryConsumerTrait for Statser<W> {
 		assert!(self.ptr2sc.contains_key(oldptr));
 
 		let origscu = self.ptr2sc[oldptr] as usize;
-		self.ptr2sc.remove(&oldptr);
+		self.ptr2sc.remove(oldptr);
 
 		if origscu > NUM_SCS {
 		    self.oversize_now -= 1;
@@ -164,7 +175,7 @@ impl<'a, W: Write> EntryConsumerTrait for Statser<W> {
 		let newsc = layout_to_sizeclass(*newsiz, *reqalign);
 		let newscu = newsc as usize;
 
-		assert!(! self.ptr2sc.contains_key(&resptr));
+		assert!(! self.ptr2sc.contains_key(resptr));
 		self.ptr2sc.insert(*resptr, newsc);
 
 		//XXX simulate promotion of growers
@@ -178,27 +189,35 @@ impl<'a, W: Write> EntryConsumerTrait for Statser<W> {
 		    }
 
 		    self.oversize_now += 1;
-		    self.oversize_highwater = self.oversize_highwater.max(self.oversize_now);
+		    if self.oversize_now > self.oversize_highwater {
+			self.oversize_highwater = self.oversize_now;
+			eprintln!(">{:>3} >{:>9} {:>11} {:>15}", NUM_SCS, conv(sizeclass_to_slotsize((NUM_SCS-1) as u8) as u128), self.oversize_highwater, self.oversize_totalallocs);
+		    }
 		} else {
 		    if origscu != newscu {
 			self.slabs_totallocs[newscu] += 1;
 		    }
 
 		    self.slabs_now[newscu] += 1;
-		    self.slabs_highwater[newscu] = self.slabs_highwater[newscu].max(self.slabs_now[newscu]);
+		    if self.slabs_now[newscu] > self.slabs_highwater[newscu] {
+			self.slabs_highwater[newscu] = self.slabs_now[newscu];
+			eprintln!("{:>4} {:>10} {:>11} {:>13}", newscu, conv(sizeclass_to_slotsize(newscu as u8) as u128), self.slabs_highwater[newscu].separate_with_commas(), self.slabs_totallocs[newscu].separate_with_commas());
+		    }
 		}
 	    }
 	}
     }
     fn done(&mut self) {
 	self.write_stats();
-	writeln!(self.w, "done:-}}!");
+	writeln!(self.w, "done:-}}!").ok();
     }
 }
 
 pub struct Parser<T: EntryConsumerTrait> {
     entryconsumer: T,
     consumedheader: bool,
+
+    // The size of a usize on the source machine (as read from the smalloclog file header):
     sou: usize,
 
     // How many bytes do we need to read to decode each of these 4 things:
@@ -208,7 +227,6 @@ pub struct Parser<T: EntryConsumerTrait> {
     chunk_size_realloc: usize
 }
 
-use std::cmp::max;
 impl<T: EntryConsumerTrait> Parser<T> {
     pub fn new(entryconsumer: T) -> Self {
         Parser {
@@ -222,12 +240,6 @@ impl<T: EntryConsumerTrait> Parser<T> {
 	}
     }
 
-    /// Returns the biggest chunk of bytes that this parser might need to be able to make progress. (This is necessary for slurp() to do minimal copying while guaranteeing progress.)
-    #[inline(always)]
-    fn biggest_chunk_needed(&self) -> usize {
-	return max(max(max(self.chunk_size_header, self.chunk_size_alloc), self.chunk_size_free), self.chunk_size_realloc);
-    }
-    
     #[inline(always)]
     /// Returns the number of bytes successfully consumed. If the
     /// return value is non-zero then the header was successfully
@@ -249,7 +261,7 @@ impl<T: EntryConsumerTrait> Parser<T> {
 
 	assert!(i == self.chunk_size_header);
 
-	return self.chunk_size_header;
+	self.chunk_size_header
     }
 
     /// Returns a tuple of (Option<Entry>, number of bytes successfully consumed).
@@ -258,7 +270,7 @@ impl<T: EntryConsumerTrait> Parser<T> {
 	let mut i: usize = 0; // consumed bytes
 	let sou = self.sou; // to save a few chars of reading
 	
-	if bs.len() >= 1 {
+	if !bs.is_empty() {
 	    match bs[i] {
 		b'a' => {
 		    if bs.len() >= self.chunk_size_alloc {
@@ -308,7 +320,8 @@ impl<T: EntryConsumerTrait> Parser<T> {
 		}
 	    }
 	}
-	return (retentry, i);
+
+	(retentry, i)
     }
     
     /// Returns the number of bytes successfully consumed.
@@ -317,7 +330,6 @@ impl<T: EntryConsumerTrait> Parser<T> {
 	let mut retval: usize = 0; // track how many bytes we consumed to return it when we're done.
 
 	if ! self.consumedheader {
-	    //eprintln!("xxx about to ttchb(), bs.len(): {}", ourbs.len());
 
 	    let hbs = self.try_to_consume_header_bytes(ourbs);
 	    if hbs == 0 {
@@ -331,9 +343,7 @@ impl<T: EntryConsumerTrait> Parser<T> {
 	}
 	
 	loop {
-	    //eprintln!("xxx about to ttpne(), bs.len(): {}", ourbs.len());
 	    let (e, j) = self.try_to_parse_next_entry(ourbs);
-	    //eprintln!("xxx just ttpne(), j: {}", j);
 
 	    if j == 0 {
 		return retval;
@@ -352,7 +362,6 @@ impl<T: EntryConsumerTrait> Parser<T> {
 }
 
 use std::io::{BufRead};
-use std::io;
 
 const BUFSIZ: usize = 2usize.pow(20); // XXX todo experiment with different buf sizes
 
@@ -362,20 +371,15 @@ pub fn slurp<R: BufRead, T: EntryConsumerTrait>(mut r: R, mut p: Parser<T>) {
     let mut bytesfilled: usize = 0;
 
     loop {
-	//eprintln!("xxx about to read(), bytesfilled: {}", bytesfilled);
 	let bytesread = r.read(&mut buffer[bytesfilled..]).unwrap();
-	//eprintln!("xxx just read(), bytesread: {}", bytesread);
 	if bytesread == 0 {
-	    //eprintln!("xxx about to done()");
 	    p.done();
 	    return;
 	}
 
 	bytesfilled += bytesread;
 
-	//eprintln!("xxx about to ttcb(), bytesfilled: {}", bytesfilled);
 	let processed = p.try_to_consume_bytes(&buffer[..bytesfilled]);
-	//eprintln!("xxx just ttcb(), processed: {}", processed);
 
 	assert!(processed <= bytesfilled);
 

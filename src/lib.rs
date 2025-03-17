@@ -19,14 +19,12 @@ const U_U8: u8 = (std::primitive::usize::BITS / 8) as u8; // number of bytes for
 const U: usize = U_U8 as usize;
 static mut MY_FILE_OPT: Option<File> = None;
 #[allow(static_mut_refs)] // This function is called only from within a lock (a dumb compare-and-exchange spinlock). So we can use non-atomic test and set on MY_FILE_OPT.
-fn create_my_file() -> () {
+fn create_my_file() {
     // If MY_FILE_OPT doesn't already have a File in it, create a File, write the smalloclog header to it, and store it in MY_FILE_OPT.
 
     unsafe {
 	if MY_FILE_OPT.is_none() {
 	    let mut new_file = File::create("smalloclog.log").unwrap();
-
-	    assert!(U <= 32); // looking forward to 256-bit CPUs archs. But not 512-bit CPU archs.
 
 	    let header: [u8; 2] = [
 		b'3', // version of smalloclog file
@@ -38,13 +36,6 @@ fn create_my_file() -> () {
 	};
     }
 }
-
-//XXX#[inline(always)]
-//XXXfn log_layout(layout: core::alloc::Layout) -> Result<(), io::Error> {
-//XXX    write(&layout.size().to_le_bytes())?;
-//XXX    write(&layout.align().to_le_bytes())?;
-//XXX    Ok(())
-//XXX}
 
 //XXXX add detection of CPU number
 unsafe impl GlobalAlloc for SmallocLog {
@@ -72,7 +63,7 @@ unsafe impl GlobalAlloc for SmallocLog {
 
 	#[allow(static_mut_refs)] // This function is called only from within a lock (a dumb compare-and-exchange spinlock). So we can use non-atomic test and set on MY_FILE_OPT.
 	unsafe {
-	    assert!(! MY_FILE_OPT.is_none(), "It was created by create_MY_FILE above.");
+	    assert!(MY_FILE_OPT.is_some(), "It was created by create_MY_FILE above.");
 	    MY_FILE_OPT.as_mut().expect("").write_all(&entry).unwrap();
 	}
 
@@ -100,7 +91,7 @@ unsafe impl GlobalAlloc for SmallocLog {
 
 	#[allow(static_mut_refs)] // This function is called only from within a lock (a dumb compare-and-exchange spinlock). So we can use non-atomic test and set on MY_FILE_OPT.
 	unsafe {
-	    assert!(! MY_FILE_OPT.is_none(), "MY_FILE is created in alloc(), which must be called before any call to dealloc().");
+	    assert!(MY_FILE_OPT.is_some(), "MY_FILE is created in alloc(), which must be called before any call to dealloc().");
 	    MY_FILE_OPT.as_mut().expect("").write_all(&entry).unwrap();
 	}
 
@@ -134,7 +125,7 @@ unsafe impl GlobalAlloc for SmallocLog {
 
 	#[allow(static_mut_refs)] // This function is called only from within a lock (a dumb compare-and-exchange spinlock). So we can use non-atomic test and set on MY_FILE_OPT.
 	unsafe {
-	    assert!(! MY_FILE_OPT.is_none(), "MY_FILE is created in alloc(), which must be called before any call to realloc().");
+	    assert!(MY_FILE_OPT.is_some(), "MY_FILE is created in alloc(), which must be called before any call to realloc().");
 	    MY_FILE_OPT.as_mut().expect("").write_all(&entry).unwrap();
 	}
 
