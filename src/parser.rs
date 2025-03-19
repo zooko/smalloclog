@@ -53,7 +53,9 @@ struct OpenBook {
 }
 
 struct ClosedBook {
-    movecostworst: usize,
+    numlifes: usize, // Number of lifes which follow this exact realloc progression
+    movecostworstperlife: usize,
+
     movecostsmalloc: usize,
     key: String
 }
@@ -70,10 +72,10 @@ impl ClosedBook {
 	}
 	
 	let mut prevch = &chs[0];
-	let mut movecostworst = 0;
+	let mut movecostworstperlife = 0;
 	let mut movecostsmalloc = 0;
 	for ch in &chs[1..] {
-	    movecostworst += ch.newsiz - prevch.newsiz;
+	    movecostworstperlife += prevch.newsiz;
 	    if ch.newsc != prevch.newsc {
 		movecostsmalloc += prevch.newsiz;
 	    }
@@ -81,7 +83,8 @@ impl ClosedBook {
 	}
 
 	ClosedBook {
-	    movecostworst,
+	    numlifes: 1,
+	    movecostworstperlife,
 	    movecostsmalloc,
 	    key
 	}
@@ -112,7 +115,9 @@ impl PartialOrd for ClosedBook {
 
 impl Ord for ClosedBook {
     fn cmp(&self, other: &Self) -> Ordering {
-	self.movecostworst.cmp(&other.movecostworst)
+	let stwc = self.movecostworstperlife*self.numlifes;
+	let otwc = other.movecostworstperlife*other.numlifes;
+	stwc.cmp(&otwc)
     }
 }
 
@@ -142,7 +147,8 @@ fn conv(size: usize) -> String {
 }
 use thousands::Separable;
 
-use smalloc::{sizeclass_to_slots,OVERSIZE_SC,NUM_SCS};
+use smalloc::{sizeclass_to_numslots, sizeclass_to_slotsize, OVERSIZE_SC, NUM_SCS, MAX_SC_TO_PACK_INTO_CACHELINE, HUGE_SLOTS_SC};
+
 impl<W:Write> Statser<W> {
 
     pub fn new(w: W) -> Self {
@@ -160,43 +166,46 @@ impl<W:Write> Statser<W> {
 	ns.slabs_totallocs.resize(NUM_SCS, 0); // initialize elements to 0
 	ns.slabs_highwater.resize(NUM_SCS, 0); // initialize elements to 0
 
-	eprintln!("{:>4} {:>11} {:>11} {:>15}", "sc", "size", "highwater", "tot");
-	eprintln!("{:>4} {:>11} {:>11} {:>15}", "--", "----", "---------", "---");
+	eprintln!("{:>4} {:>11} {:>11} {:>11} {:>15}", "sc", "size", "slots", "highwater", "tot");
+	eprintln!("{:>4} {:>11} {:>11} {:>11} {:>15}", "--", "----", "-----", "---------", "---");
 
 	ns
     }
 
     fn write_stats(&mut self) {
-	writeln!(self.w, "{:>4} {:>11} {:>11} {:>15}", "sc", "size", "highwater", "tot").unwrap();
-	writeln!(self.w, "{:>4} {:>11} {:>11} {:>15}", "--", "----", "---------", "---").unwrap();
+	writeln!(self.w, "{:>4} {:>11} {:>11} {:>11} {:>15}", "sc", "size", "slots", "highwater", "tot").unwrap();
+	writeln!(self.w, "{:>4} {:>11} {:>11} {:>11} {:>15}", "--", "----", "-----", "---------", "---").unwrap();
 	for i in 0..OVERSIZE_SC {
-	    writeln!(self.w, "{:>4} {:>11} {:>11} {:>15}", i, conv(sizeclass_to_slotsize(i)), self.slabs_highwater[i].separate_with_commas(), self.slabs_totallocs[i].separate_with_commas()).unwrap();
+	    writeln!(self.w, "{:>4} {:>11} {:>11} {:>11} {:>15}", i, conv(sizeclass_to_slotsize(i)), sizeclass_to_numslots(i).separate_with_commas(), self.slabs_highwater[i].separate_with_commas(), self.slabs_totallocs[i].separate_with_commas()).unwrap();
 	}
 
-	writeln!(self.w, ">{:>3} >{:>10} {:>11} {:>15}", OVERSIZE_SC-1, conv(sizeclass_to_slotsize(OVERSIZE_SC-1)), self.slabs_highwater[OVERSIZE_SC].separate_with_commas(), self.slabs_totallocs[OVERSIZE_SC].separate_with_commas()).unwrap();
+	writeln!(self.w, ">{:>3} >{:>10} >{:>10} {:>11} {:>15}", OVERSIZE_SC-1, conv(sizeclass_to_slotsize(OVERSIZE_SC-1)), sizeclass_to_numslots(OVERSIZE_SC-1).separate_with_commas(), self.slabs_highwater[OVERSIZE_SC].separate_with_commas(), self.slabs_totallocs[OVERSIZE_SC].separate_with_commas()).unwrap();
 
 	let mut tot_bytes_worst = 0;
 	let mut tot_bytes_smalloc = 0;
 	let mut tot_bytes_saved = 0;
-        writeln!(self.w, "{:>14} {:>14} {:>14} {:<14}", "worst case", "smalloc case", "saved", "realloc hist").unwrap();
-        writeln!(self.w, "{:>14} {:>14} {:>14} {:<14}", "----------", "------------", "-----", "------------").unwrap();
+        writeln!(self.w, "{:>13} {:>14} {:>14} {:>14} {:>5} {:<14}", "num", "worst case", "smalloc case", "saved", "%", "realloc hist").unwrap();
+        writeln!(self.w, "{:>13} {:>14} {:>14} {:>14} {:>5} {:<14}", "---", "----------", "------------", "-----", "-", "------------").unwrap();
 	let mut cbs: Vec<ClosedBook> = self.cbs.drain().collect();
 	cbs.sort_unstable_by(|a, b| b.cmp(a));
 	for cb in cbs {
-	    let mcw = cb.movecostworst;
+	    let mcw = cb.movecostworstperlife * cb.numlifes;
 	    let mcs = cb.movecostsmalloc;
+	    assert!(mcw >= mcs);
 	    let saved = mcw-mcs;
-            writeln!(self.w, "{:>14} {:>14} {:>14} {:<14}", mcw.separate_with_commas(), mcs.separate_with_commas(), saved.separate_with_commas(), cb.key).ok();
+	    let percsaved = (saved as f64 / mcw as f64) * 100.0;
+            writeln!(self.w, "{:>13} {:>14} {:>14} {:>14} {:>5.0}% {:<14}", cb.numlifes.separate_with_commas(), mcw.separate_with_commas(), mcs.separate_with_commas(), saved.separate_with_commas(), percsaved, cb.key).ok();
 	    tot_bytes_worst += mcw;
 	    tot_bytes_smalloc += mcs;
 	    tot_bytes_saved += saved;
 	}
 
-	writeln!(self.w, "tot bytes moved worst-case: {}, tot bytes moved smalloc: {}, saved from move: {}", tot_bytes_worst.separate_with_commas(), tot_bytes_smalloc.separate_with_commas(), tot_bytes_saved.separate_with_commas()).ok();
+	let totalpercsaved = (tot_bytes_saved as f64 / tot_bytes_worst as f64) * 100.0;
+	writeln!(self.w, "tot bytes moved worst-case: {}, tot bytes moved smalloc: {}, saved from move: {}, percentage saved: {:>.0}%", tot_bytes_worst.separate_with_commas(), tot_bytes_smalloc.separate_with_commas(), tot_bytes_saved.separate_with_commas(), totalpercsaved).ok();
     }
 
     fn find_next_size_class_with_open_slot(&mut self, mut sc: usize) -> usize {
-	let mut s = sizeclass_to_slots(sc);
+	let mut s = sizeclass_to_numslots(sc);
 	
 	assert!(self.slabs_now[sc] <= s, "{}, {}, {}", sc, self.slabs_now[sc], s); // We can never have more that s slots in a slab.
 
@@ -205,9 +214,9 @@ impl<W:Write> Statser<W> {
 	    // This slab is full so we overflow to the next sizeclass.
 
 	    sc += 1;
-	    assert!(sc < NUM_SCS); // See "Note" above, on this loop.
+	    assert!(sc < NUM_SCS, "sc: {}, NUM_SCS: {}, slabs[{}]: {}", sc, NUM_SCS, sc-1, self.slabs_now[sc-1]); // See "Note" above, on this loop.
 
-	    s = sizeclass_to_slots(sc);
+	    s = sizeclass_to_numslots(sc);
 
 	    assert!(self.slabs_now[sc] <= s, "{}, {}, {}", sc, self.slabs_now[sc], s); // We can never have more that s slots in a slab.
 	}
@@ -218,7 +227,8 @@ impl<W:Write> Statser<W> {
     }
 }
 
-use smalloc::{layout_to_sizeclass, sizeclass_to_slotsize};
+use std::cmp::max;
+use smalloc::{layout_to_sizeclass};
 impl<W: Write> EntryConsumerTrait for Statser<W> {
     fn consume_entry(&mut self, e: &Entry) {
 	match e {
@@ -250,11 +260,11 @@ impl<W: Write> EntryConsumerTrait for Statser<W> {
 
 		if self.slabs_now[sc] > self.slabs_highwater[sc] {
 		    self.slabs_highwater[sc] = self.slabs_now[sc];
-		    if self.slabs_now[sc] == sizeclass_to_slots(sc) {
+		    if self.slabs_now[sc] == sizeclass_to_numslots(sc) {
 			if sc == OVERSIZE_SC {
-			    eprintln!(">{:>3} >{:>10} {:>11} {:>15}", OVERSIZE_SC-1, conv(sizeclass_to_slotsize(OVERSIZE_SC-1)), self.slabs_highwater[sc].separate_with_commas(), self.slabs_totallocs[sc].separate_with_commas());
+			    eprintln!(">{:>3} >{:10} >{:>10} {:>11} {:>15}", OVERSIZE_SC-1, conv(sizeclass_to_slotsize(OVERSIZE_SC-1)), sizeclass_to_numslots(OVERSIZE_SC-1).separate_with_commas(), self.slabs_highwater[sc].separate_with_commas(), self.slabs_totallocs[sc].separate_with_commas());
 			} else {
-			    eprintln!("{:>4} {:>11} {:>11} {:>15}", sc, conv(sizeclass_to_slotsize(sc)), self.slabs_highwater[sc].separate_with_commas(), self.slabs_totallocs[sc].separate_with_commas());
+			    eprintln!("{:>4} {:>11} {:>11} {:>11} {:>15}", sc, conv(sizeclass_to_slotsize(sc)), sizeclass_to_numslots(sc).separate_with_commas(), self.slabs_highwater[sc].separate_with_commas(), self.slabs_totallocs[sc].separate_with_commas());
 			}
 		    }
 		}
@@ -277,30 +287,17 @@ impl<W: Write> EntryConsumerTrait for Statser<W> {
 		let cb = ClosedBook::new(ob);
 
 		// But you know what? If the worst-case cost of moved bytes in this life story was 0, then nobody cares so optimize it out...
-		if cb.movecostworst > 0 {
+		if cb.movecostworstperlife > 0 {
 		    // Add this history into our set, summing it with any existing matching histories.
 		    let curcbopt = self.cbs.take(&cb);
 		
 		    if curcbopt.is_some() {
 			let mut curcb = curcbopt.unwrap();
 
-			let oldmovecostworst = curcb.movecostworst; // XXX only for assert below
-			let oldmovecostsmalloc = curcb.movecostsmalloc; // XXX only for assert below
-			let mut newmovecostworst = curcb.movecostworst;
-			let mut newmovecostsmalloc = curcb.movecostsmalloc;
-
-			newmovecostworst += cb.movecostworst;
-			newmovecostsmalloc += cb.movecostsmalloc;
-
-			curcb.movecostworst = newmovecostworst;
-			curcb.movecostsmalloc = newmovecostsmalloc;
+			curcb.movecostsmalloc += cb.movecostsmalloc;
+			curcb.numlifes += 1;
 
 			self.cbs.insert(curcb);
-			
-			assert!(self.cbs.get(&cb).unwrap().movecostworst > oldmovecostworst, "omcw: {}, cur mcw: {}", oldmovecostworst, self.cbs.get(&cb).unwrap().movecostworst);
-			assert!(self.cbs.get(&cb).unwrap().movecostsmalloc >= oldmovecostsmalloc);
-			
-			// XXX check that this updates the copy inside the hashmap... right?!Have to do this by-reference ??
 		    } else {
 			self.cbs.insert(cb);
 		    }
@@ -318,27 +315,28 @@ impl<W: Write> EntryConsumerTrait for Statser<W> {
 
 		self.slabs_now[prevsc] -= 1;
 
-		let mut newsc = layout_to_sizeclass(*newsiz, *reqalign);
-		assert!(newsc < NUM_SCS);
-
 		// Now we simulate two things: 1. Promotion of growers. 2. Overflow of slabs, By "simulate" I mean that while the actual underlying allocator is going to do whatever it does with this request for realloc(), we're here going to choose a sizeclass to simulate that the new pointer would be in in smalloc.
 
-		// (Note: we're assuming here the "worst-case scenario", where one CPU did all of these allocations. In practice we may get a little relief of the congestion of these slabs from the allocations being spread out over multiple CPUs, but we don't want to count on that necessarily, so let's look at the worst-case scenario first...)
+		// XXX (Note: we're assuming here the "worst-case scenario", where one CPU did all of these allocations. In practice we may get a little relief of the congestion of these slabs from the allocations being spread out over multiple CPUs, but we don't want to count on that necessarily, so let's look at the worst-case scenario first...)
 
-		// 1. Promote growers. Any re-allocation which exceeds its slot gets bumped, not to the next sizeclass that is big enough, but also to the next sizeclass group. The groups are: A. Things that can pack into a 64-byte cache line, B. Things that can pack into a 4096-byte memory page, and C. The huge slots slab. Grower promotion can promote an allocation to group B or group C.
-		//XXXif newsc > prevsc {
-		//XXX    // Okay this realloc required moving the object to a bigger slab. Therefore this is a "grower".
-		//XXX    if newsc <= MAX_SC_TO_FIT_CACHELINE {
-		//XXX	newsc = MAX_SC_TO_FIT_CACHELINE + 1;
-		//XXX    } else {
-		//XXX	newsc = HUGE_SLOTS_SC;
-		//XXX    }
-		//XXX}
+		// 1. Promote growers. Any re-allocation which exceeds its slot gets bumped--not to the next sizeclass that is just big enough--but on to the next sizeclass *group*. The groups are: A. Things that can pack into a 64-byte cache line, B. Things that can pack into a 4096-byte memory page, and C. The huge slots slab. Grower promotion can promote an allocation to from group A to group B, or from group B to group C.
+		let mut newsc = max(prevsc, layout_to_sizeclass(*newsiz, *reqalign));
+		assert!(newsc < NUM_SCS);
+		assert!(newsc >= prevsc);
+
+		if newsc > prevsc {
+		    // Okay this realloc required moving the object to a bigger slab. Therefore this is a "grower".
+		    if newsc <= MAX_SC_TO_PACK_INTO_CACHELINE {
+			newsc = MAX_SC_TO_PACK_INTO_CACHELINE + 1;
+		    } else {
+			newsc = HUGE_SLOTS_SC;
+		    }
+		}
 
 		// 2. Overflow of slabs:
-		newsc = self.find_next_size_class_with_open_slot(newsc);
+		let newsc = self.find_next_size_class_with_open_slot(newsc);
 
-		// Okay now insert this into our "map" -- the combination of ptr2sc and reallocon2c.
+		// Okay now insert this into our map from (new) pointer to sc.
 		assert!(! self.ptr2sc.contains_key(resptr));
 		self.ptr2sc.insert(*resptr, newsc);
 
@@ -346,7 +344,6 @@ impl<W: Write> EntryConsumerTrait for Statser<W> {
 		let mut ob = self.ptr2ob.remove(prevptr).unwrap();
 		// And append this event to its reallocation history, but only if it is a realloc to larger.
 		if newsiz > prevsiz {
-		    
 		    ob.chs.push(ReallocHistoryChapter {
 			newsiz: *newsiz, align: *reqalign, newsc
 		    });
@@ -361,11 +358,11 @@ impl<W: Write> EntryConsumerTrait for Statser<W> {
 		if self.slabs_now[newsc] > self.slabs_highwater[newsc] {
 		    self.slabs_highwater[newsc] = self.slabs_now[newsc];
 
-		    if self.slabs_now[newsc] == sizeclass_to_slots(newsc) {
+		    if self.slabs_now[newsc] == sizeclass_to_numslots(newsc) {
 			if newsc == OVERSIZE_SC {
-			    eprintln!(">{:>3} >{:>10} {:>11} {:>15}", OVERSIZE_SC-1, conv(sizeclass_to_slotsize(OVERSIZE_SC-1)), self.slabs_highwater[newsc].separate_with_commas(), self.slabs_totallocs[newsc].separate_with_commas());
+			    eprintln!(">{:>3} >{:10} >{:>10} {:>11} {:>15}", OVERSIZE_SC-1, conv(sizeclass_to_slotsize(OVERSIZE_SC-1)), sizeclass_to_numslots(OVERSIZE_SC-1), self.slabs_highwater[newsc].separate_with_commas(), self.slabs_totallocs[newsc].separate_with_commas());
 			} else {
-			    eprintln!("{:>4} {:>11} {:>11} {:>15}", newsc, conv(sizeclass_to_slotsize(newsc)), self.slabs_highwater[newsc].separate_with_commas(), self.slabs_totallocs[newsc].separate_with_commas());
+			    eprintln!("{:>4} {:>11} {:>11} {:>11} {:>15}", newsc, conv(sizeclass_to_slotsize(newsc)), sizeclass_to_numslots(newsc), self.slabs_highwater[newsc].separate_with_commas(), self.slabs_totallocs[newsc].separate_with_commas());
 			}
 		    }
 		}
