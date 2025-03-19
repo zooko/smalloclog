@@ -6,7 +6,7 @@ use std::io::Write;
 pub enum Entry {
     Alloc { reqsiz: usize, reqalign: usize, resptr: usize },
     Free { oldptr: usize },
-    Realloc { oldptr: usize, oldsiz: usize, reqalign: usize, newsiz: usize, resptr: usize }
+    Realloc { prevptr: usize, prevsiz: usize, reqalign: usize, newsiz: usize, resptr: usize }
 }
 
 pub trait EntryConsumerTrait {
@@ -31,8 +31,8 @@ impl<W: Write> EntryConsumerTrait for Logger<W> {
 		writeln!(self.w, "alloc({}, {}) -> 0x{:x}", reqsiz, reqalign, resptr).ok(),
 	    Entry::Free { oldptr } =>
 		writeln!(self.w, "dealloc(0x{:x})", oldptr).ok(),
-	    Entry::Realloc { oldptr, oldsiz, reqalign, newsiz, resptr } =>
-		writeln!(self.w, "realloc(0x{:x}, {}, {}, {}) -> 0x{:x}", oldptr, oldsiz, reqalign, newsiz, resptr).ok()
+	    Entry::Realloc { prevptr, prevsiz, reqalign, newsiz, resptr } =>
+		writeln!(self.w, "realloc(0x{:x}, {}, {}, {}) -> 0x{:x}", prevptr, prevsiz, reqalign, newsiz, resptr).ok()
 	}.unwrap()
     }
     fn done(&mut self) {
@@ -40,7 +40,81 @@ impl<W: Write> EntryConsumerTrait for Logger<W> {
     }
 }
 
-use std::collections::HashMap;
+use std::collections::{HashMap,HashSet};
+
+struct ReallocHistoryChapter {
+    newsiz: usize,
+    align: usize,
+    newsc: usize
+}
+
+struct OpenBook {
+    chs: Vec<ReallocHistoryChapter>,
+}
+
+struct ClosedBook {
+    movecostworst: usize,
+    movecostsmalloc: usize,
+    key: String
+}
+
+impl ClosedBook {
+    pub fn new(openbook: OpenBook) -> Self {
+	assert!(!openbook.chs.is_empty());
+
+	let chs = openbook.chs;
+	    
+	let mut key: String = format!("{}:{}", chs[0].align, chs[0].newsiz);
+	for ch in &chs[1..] {
+	    key.push_str(format!("->{}", ch.newsiz).as_str());
+	}
+	
+	let mut prevch = &chs[0];
+	let mut movecostworst = 0;
+	let mut movecostsmalloc = 0;
+	for ch in &chs[1..] {
+	    movecostworst += ch.newsiz - prevch.newsiz;
+	    if ch.newsc != prevch.newsc {
+		movecostsmalloc += prevch.newsiz;
+	    }
+	    prevch = ch;
+	}
+
+	ClosedBook {
+	    movecostworst,
+	    movecostsmalloc,
+	    key
+	}
+    }
+}
+
+use std::hash::{Hash,Hasher};
+impl Hash for ClosedBook {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+	self.key.hash(state)
+    }
+}
+
+impl PartialEq for ClosedBook {
+    fn eq(&self, other: &Self) -> bool {
+	self.key == other.key
+    }
+}
+
+impl Eq for ClosedBook { }
+
+use std::cmp::{PartialOrd,Ord,Ordering};
+impl PartialOrd for ClosedBook {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ClosedBook {
+    fn cmp(&self, other: &Self) -> Ordering {
+	self.movecostworst.cmp(&other.movecostworst)
+    }
+}
 
 pub struct Statser<W: Write> {
     w: W,
@@ -50,10 +124,15 @@ pub struct Statser<W: Write> {
     slabs_totallocs: Vec<usize>,
     slabs_highwater: Vec<usize>,
 
-    // map realloc traces (oldsize, newsize) to counts of how many times that realloc happened
-    reallocon2c: HashMap<(usize, usize), usize>,
     // map ptr to current SC
     ptr2sc: HashMap<usize, usize>,
+
+    // map current ptr to its so-far life history of reallocs
+    ptr2ob: HashMap<usize, OpenBook>,
+
+    // set of closed books of realloc histories
+    cbs: HashSet<ClosedBook>
+	
 }
 
 use bytesize::ByteSize;
@@ -72,8 +151,9 @@ impl<W:Write> Statser<W> {
 	    slabs_now: Vec::with_capacity(NUM_SCS),
 	    slabs_totallocs: Vec::with_capacity(NUM_SCS),
 	    slabs_highwater: Vec::with_capacity(NUM_SCS),
-	    reallocon2c: HashMap::with_capacity(100_000_000),
-	    ptr2sc: HashMap::with_capacity(100_000_000)
+	    ptr2sc: HashMap::with_capacity(100_000_000),
+	    ptr2ob: HashMap::with_capacity(100_000_000),
+	    cbs: HashSet::with_capacity(100_000_000)
 	};
 
 	ns.slabs_now.resize(NUM_SCS, 0); // initialize elements to 0
@@ -95,28 +175,24 @@ impl<W:Write> Statser<W> {
 
 	writeln!(self.w, ">{:>3} >{:>10} {:>11} {:>15}", OVERSIZE_SC-1, conv(sizeclass_to_slotsize(OVERSIZE_SC-1)), self.slabs_highwater[OVERSIZE_SC].separate_with_commas(), self.slabs_totallocs[OVERSIZE_SC].separate_with_commas()).unwrap();
 
-	let mut reallocon2c_entries: Vec<(&(usize, usize), &usize)> = self.reallocon2c.iter().collect();
-	reallocon2c_entries.sort_by(|a, b| a.1.cmp(b.1));
-
-	let mut bytes_moved = 0;
-	let mut bytes_saved_from_move = 0;
-	for (sizs, count) in reallocon2c_entries {
-            write!(self.w, "{:>12} * {:>10} ({:>2}) -> {:>10} ({:>2})", count.separate_with_commas(), sizs.0.separate_with_commas(), layout_to_sizeclass(sizs.0, 1), sizs.1.separate_with_commas(), layout_to_sizeclass(sizs.1, 1)).ok();
-	    if layout_to_sizeclass(sizs.1, 1) > layout_to_sizeclass(sizs.0, 1) {
-		let bm = *count * sizs.0;
-		writeln!(self.w, " + {:>14}", bm.separate_with_commas()).ok();
-		bytes_moved += bm;
-	    } else {
-		let bs = *count * sizs.0;
-		writeln!(self.w, " _ {:>14}", bs.separate_with_commas()).ok();
-
-//		xxxx track provenance of growers! How many of them came up from smaller growers. And how many smaller growers then stopped growing!
-		    
-		bytes_saved_from_move += bs;
-	    }
+	let mut tot_bytes_worst = 0;
+	let mut tot_bytes_smalloc = 0;
+	let mut tot_bytes_saved = 0;
+        writeln!(self.w, "{:>14} {:>14} {:>14} {:<14}", "worst case", "smalloc case", "saved", "realloc hist").unwrap();
+        writeln!(self.w, "{:>14} {:>14} {:>14} {:<14}", "----------", "------------", "-----", "------------").unwrap();
+	let mut cbs: Vec<ClosedBook> = self.cbs.drain().collect();
+	cbs.sort_unstable_by(|a, b| b.cmp(a));
+	for cb in cbs {
+	    let mcw = cb.movecostworst;
+	    let mcs = cb.movecostsmalloc;
+	    let saved = mcw-mcs;
+            writeln!(self.w, "{:>14} {:>14} {:>14} {:<14}", mcw.separate_with_commas(), mcs.separate_with_commas(), saved.separate_with_commas(), cb.key).ok();
+	    tot_bytes_worst += mcw;
+	    tot_bytes_smalloc += mcs;
+	    tot_bytes_saved += saved;
 	}
 
-	writeln!(self.w, "bytes moved: {}, bytes saved from move: {}", bytes_moved.separate_with_commas(), bytes_saved_from_move.separate_with_commas()).ok();
+	writeln!(self.w, "tot bytes moved worst-case: {}, tot bytes moved smalloc: {}, saved from move: {}", tot_bytes_worst.separate_with_commas(), tot_bytes_smalloc.separate_with_commas(), tot_bytes_saved.separate_with_commas()).ok();
     }
 
     fn find_next_size_class_with_open_slot(&mut self, mut sc: usize) -> usize {
@@ -147,14 +223,27 @@ impl<W: Write> EntryConsumerTrait for Statser<W> {
     fn consume_entry(&mut self, e: &Entry) {
 	match e {
 	    Entry::Alloc { reqsiz, reqalign, resptr } => {
-		let origsc = layout_to_sizeclass(*reqsiz, *reqalign);
-		assert!(origsc < NUM_SCS);
+		let prevsc = layout_to_sizeclass(*reqsiz, *reqalign);
+		assert!(prevsc < NUM_SCS);
 
 		// Overflow of slabs:
-		let sc = self.find_next_size_class_with_open_slot(origsc);
+		let sc = self.find_next_size_class_with_open_slot(prevsc);
 
 		assert!(! self.ptr2sc.contains_key(resptr));
 		self.ptr2sc.insert(*resptr, sc);
+		assert!(! self.ptr2ob.contains_key(resptr));
+
+		let ch: ReallocHistoryChapter = ReallocHistoryChapter {
+		    newsiz: *reqsiz,
+		    align: *reqalign,
+		    newsc: sc
+		};
+
+		let ob: OpenBook = OpenBook {
+		    chs: vec![ch]
+		};
+
+		self.ptr2ob.insert(*resptr, ob);
 
 		self.slabs_totallocs[sc] += 1;
 		self.slabs_now[sc] += 1;
@@ -170,9 +259,11 @@ impl<W: Write> EntryConsumerTrait for Statser<W> {
 		    }
 		}
 	    }
+
 	    Entry::Free { oldptr } => {
 		assert!(self.ptr2sc.contains_key(oldptr));
-		
+		assert!(self.ptr2ob.contains_key(oldptr));
+
 		let sc = self.ptr2sc[oldptr];
 		assert!(sc < NUM_SCS);
 
@@ -180,16 +271,52 @@ impl<W: Write> EntryConsumerTrait for Statser<W> {
 		self.slabs_now[sc] -= 1;
 
 		self.ptr2sc.remove(oldptr);
+
+		// Now we need to collect realloc-history statistics for later reporting before we free this.
+		let ob = self.ptr2ob.remove(oldptr).unwrap();
+		let cb = ClosedBook::new(ob);
+
+		// But you know what? If the worst-case cost of moved bytes in this life story was 0, then nobody cares so optimize it out...
+		if cb.movecostworst > 0 {
+		    // Add this history into our set, summing it with any existing matching histories.
+		    let curcbopt = self.cbs.take(&cb);
+		
+		    if curcbopt.is_some() {
+			let mut curcb = curcbopt.unwrap();
+
+			let oldmovecostworst = curcb.movecostworst; // XXX only for assert below
+			let oldmovecostsmalloc = curcb.movecostsmalloc; // XXX only for assert below
+			let mut newmovecostworst = curcb.movecostworst;
+			let mut newmovecostsmalloc = curcb.movecostsmalloc;
+
+			newmovecostworst += cb.movecostworst;
+			newmovecostsmalloc += cb.movecostsmalloc;
+
+			curcb.movecostworst = newmovecostworst;
+			curcb.movecostsmalloc = newmovecostsmalloc;
+
+			self.cbs.insert(curcb);
+			
+			assert!(self.cbs.get(&cb).unwrap().movecostworst > oldmovecostworst, "omcw: {}, cur mcw: {}", oldmovecostworst, self.cbs.get(&cb).unwrap().movecostworst);
+			assert!(self.cbs.get(&cb).unwrap().movecostsmalloc >= oldmovecostsmalloc);
+			
+			// XXX check that this updates the copy inside the hashmap... right?!Have to do this by-reference ??
+		    } else {
+			self.cbs.insert(cb);
+		    }
+		}
 	    }
-	    Entry::Realloc { oldptr, oldsiz, reqalign, newsiz, resptr } => {
-		assert!(self.ptr2sc.contains_key(oldptr));
 
-		let origsc = self.ptr2sc[oldptr];
-		assert!(origsc < NUM_SCS);
-		assert!(layout_to_sizeclass(*oldsiz, *reqalign) <= origsc); // The SC we had this ptr in (in ptr2sc) was big enough to hold the oldsiz&alignment.
-		self.ptr2sc.remove(oldptr);
+	    Entry::Realloc { prevptr, prevsiz, reqalign, newsiz, resptr } => {
+		assert!(self.ptr2sc.contains_key(prevptr));
+		assert!(self.ptr2ob.contains_key(prevptr));
 
-		self.slabs_now[origsc] -= 1;
+		let prevsc = self.ptr2sc[prevptr];
+		assert!(prevsc < NUM_SCS);
+		assert!(layout_to_sizeclass(*prevsiz, *reqalign) <= prevsc); // The SC we had this ptr in (in ptr2sc) was big enough to hold the prevsiz&alignment.
+		self.ptr2sc.remove(prevptr);
+
+		self.slabs_now[prevsc] -= 1;
 
 		let mut newsc = layout_to_sizeclass(*newsiz, *reqalign);
 		assert!(newsc < NUM_SCS);
@@ -199,7 +326,7 @@ impl<W: Write> EntryConsumerTrait for Statser<W> {
 		// (Note: we're assuming here the "worst-case scenario", where one CPU did all of these allocations. In practice we may get a little relief of the congestion of these slabs from the allocations being spread out over multiple CPUs, but we don't want to count on that necessarily, so let's look at the worst-case scenario first...)
 
 		// 1. Promote growers. Any re-allocation which exceeds its slot gets bumped, not to the next sizeclass that is big enough, but also to the next sizeclass group. The groups are: A. Things that can pack into a 64-byte cache line, B. Things that can pack into a 4096-byte memory page, and C. The huge slots slab. Grower promotion can promote an allocation to group B or group C.
-		//XXXif newsc > origsc {
+		//XXXif newsc > prevsc {
 		//XXX    // Okay this realloc required moving the object to a bigger slab. Therefore this is a "grower".
 		//XXX    if newsc <= MAX_SC_TO_FIT_CACHELINE {
 		//XXX	newsc = MAX_SC_TO_FIT_CACHELINE + 1;
@@ -215,10 +342,18 @@ impl<W: Write> EntryConsumerTrait for Statser<W> {
 		assert!(! self.ptr2sc.contains_key(resptr));
 		self.ptr2sc.insert(*resptr, newsc);
 
-		let realloconkey = (*oldsiz, *newsiz); // note: neglecting alignment in realloconkey, because it probably won't matter much to the results, and because I can't think of a nice way to take into account while still merging same-sized reallocs in order to get more useful statistics...// XXX revisit this now that we have the alloc-realloc tracking! :-) :-) :-)
-		*self.reallocon2c.entry(realloconkey).or_insert(0) += 1;
+		// Move this allocation's reallocation history to the new ptr in our map.
+		let mut ob = self.ptr2ob.remove(prevptr).unwrap();
+		// And append this event to its reallocation history, but only if it is a realloc to larger.
+		if newsiz > prevsiz {
+		    
+		    ob.chs.push(ReallocHistoryChapter {
+			newsiz: *newsiz, align: *reqalign, newsc
+		    });
+		}
+		self.ptr2ob.insert(*resptr, ob);
 
-		if origsc != newsc {
+		if prevsc != newsc {
 		    self.slabs_totallocs[newsc] += 1;
 		}
 
@@ -332,9 +467,9 @@ impl<T: EntryConsumerTrait> Parser<T> {
 		    if bs.len() >= self.chunk_size_realloc {
 			i += 1;
 
-			let oldptr = usize::from_le_bytes(bs[i..i+sou].try_into().unwrap());
+			let prevptr = usize::from_le_bytes(bs[i..i+sou].try_into().unwrap());
 			i += sou;
-			let oldsiz = usize::from_le_bytes(bs[i..i+sou].try_into().unwrap());
+			let prevsiz = usize::from_le_bytes(bs[i..i+sou].try_into().unwrap());
 			i += sou;
 			let reqalign = usize::from_le_bytes(bs[i..i+sou].try_into().unwrap());
 			i += sou;
@@ -343,7 +478,7 @@ impl<T: EntryConsumerTrait> Parser<T> {
 			let resptr = usize::from_le_bytes(bs[i..i+sou].try_into().unwrap());
 			i += sou;
 			
-			retentry = Some(Entry::Realloc { oldptr, oldsiz, reqalign, newsiz, resptr });
+			retentry = Some(Entry::Realloc { prevptr, prevsiz, reqalign, newsiz, resptr });
 		    }
 		}
 		_ => {
