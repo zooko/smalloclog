@@ -201,7 +201,7 @@ impl<W:Write> Statser<W> {
 	}
 
 	let totalpercsaved = (tot_bytes_saved as f64 / tot_bytes_worst as f64) * 100.0;
-	writeln!(self.w, "tot bytes moved worst-case: {}, tot bytes moved smalloc: {}, saved from move: {}, percentage saved: {:>.0}%", tot_bytes_worst.separate_with_commas(), tot_bytes_smalloc.separate_with_commas(), tot_bytes_saved.separate_with_commas(), totalpercsaved).ok();
+	writeln!(self.w, "tot bytes moved worst-case: {:>14}, tot bytes moved smalloc: {:>14}, saved from move: {:>14}, percentage saved: {:>3.0}%", tot_bytes_worst.separate_with_commas(), tot_bytes_smalloc.separate_with_commas(), tot_bytes_saved.separate_with_commas(), totalpercsaved).ok();
     }
 
     fn find_next_size_class_with_open_slot(&mut self, mut sc: usize) -> usize {
