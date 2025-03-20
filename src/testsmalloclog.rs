@@ -7,10 +7,9 @@ const MAX_U8: u8 = 2u8.pow(6);
 use smalloclog::SmallocLog;
 
 #[global_allocator]
-static SMALLOCLOG: SmallocLog = SmallocLog {};
+ static SMALLOCLOG: SmallocLog = SmallocLog {};
 
 fn main() {
-
     println!("Hello, world!");
 
     let mut r = rand::rng();

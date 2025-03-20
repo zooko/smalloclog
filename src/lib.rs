@@ -1,3 +1,5 @@
+#![feature(random)]
+
 use std::fs::{File};
 use std::io::Write;
 
@@ -13,18 +15,48 @@ static LOCK: AtomicBool = AtomicBool::new(false);
 
 pub struct SmallocLog { }
 
+use std::random::random;
 
 use std::primitive::usize;
 const U_U8: u8 = (std::primitive::usize::BITS / 8) as u8; // number of bytes for a usize
 const U: usize = U_U8 as usize;
+
+fn gen_fname(fname: &mut [u8]) {
+    fname[0..11].copy_from_slice("smalloclog.".as_bytes());
+
+    fn randletter() -> u8 { random::<u8>() % 26 + b'a' }
+
+    for j in 11..41 { fname[j] = randletter(); }
+
+    fname[41..].copy_from_slice(".log".as_bytes());
+}
+
+//fn test_gen_fnamei//
+#[cfg(test)]
+mod tests {
+    use super::*; // This makes all the functionality in your program code available in your test module.
+
+    #[test]
+    fn test_gen_fname() {
+	let fname: &mut [u8; 45] = &mut [0u8; 45];
+	gen_fname(fname);
+	let _fnamestr = std::str::from_utf8(fname).unwrap();
+    }
+}
+
+
 static mut MY_FILE_OPT: Option<File> = None;
 #[allow(static_mut_refs)] // This function is called only from within a lock (a dumb compare-and-exchange spinlock). So we can use non-atomic test and set on MY_FILE_OPT.
 fn create_my_file() {
     // If MY_FILE_OPT doesn't already have a File in it, create a File, write the smalloclog header to it, and store it in MY_FILE_OPT.
 
+    let fname: &mut [u8; 45] = &mut [0u8; 45];
+    gen_fname(fname);
+    let fnamestr = std::str::from_utf8(fname).unwrap();
+
     unsafe {
 	if MY_FILE_OPT.is_none() {
-	    let mut new_file = File::create("smalloclog.log").unwrap();
+	    let mut new_file = File::create(fnamestr).unwrap();
 
 	    let header: [u8; 2] = [
 		b'3', // version of smalloclog file
