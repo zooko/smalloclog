@@ -125,13 +125,18 @@ impl Ord for ClosedBook {
 pub struct Statser<W: Write> {
     w: W,
 
-    // How many allocations have been requested out of each of these slabs.
+    // How many allocations have been requested out of each of these slabs?
     allocs_current: Vec<usize>,
     allocs_total: Vec<usize>,
+
+    // What was the most allocations that were live at one time that had to be satisfied by this slab?
     allocs_highwater: Vec<usize>,
 
-    // How many times have all the slabs in a whole area been found to be full when we were trying to insert into it.
-    slabareaoverflows: Vec<usize>,
+    // How many times was a specific slab found to be full when we were trying to insert into it?
+    slaboverflows: Vec<usize>,
+
+    // How many times have all the slabs in a whole area been found to be full when we were trying to insert into it? (Note that for slab numbers >= MAX_SLABNUM_TO_FIT_INTO_CACHELINE, there is only one area.)
+    areaoverflows: Vec<usize>,
 
     // map ptr to current slab num
     ptr2slabnum: HashMap<usize, usize>,
@@ -153,7 +158,7 @@ use thousands::Separable;
 
 use smalloc::{slabnum_to_numareas, slabnum_to_numslots, slabnum_to_slotsize, OVERSIZE_SLABNUM, NUM_SLABS, MAX_SLABNUM_TO_FIT_INTO_CACHELINE, LARGE_SLOTS_SLABNUM};
 
-fn tot_slots(slabnum: usize) -> usize {
+fn tot_slots_all_areas(slabnum: usize) -> usize {
     slabnum_to_numareas(slabnum) * slabnum_to_numslots(slabnum)
 }
 
@@ -165,34 +170,32 @@ impl<W:Write> Statser<W> {
 	    allocs_current: Vec::with_capacity(NUM_SLABS),
 	    allocs_total: Vec::with_capacity(NUM_SLABS),
 	    allocs_highwater: Vec::with_capacity(NUM_SLABS),
-	    slabareaoverflows: Vec::with_capacity(NUM_SLABS),
+	    slaboverflows: Vec::with_capacity(NUM_SLABS),
+	    areaoverflows: Vec::with_capacity(NUM_SLABS),
 	    ptr2slabnum: HashMap::with_capacity(100_000_000),
 	    ptr2ob: HashMap::with_capacity(100_000_000),
 	    cbs: HashSet::with_capacity(100_000_000)
 	};
 
-	ns.allocs_current.resize(NUM_SLABS, 0); // initialize elements to 0
-	ns.allocs_total.resize(NUM_SLABS, 0); // initialize elements to 0
-	ns.allocs_highwater.resize(NUM_SLABS, 0); // initialize elements to 0
-	ns.slabareaoverflows.resize(NUM_SLABS, 0); // initialize elements to 0
-
-	eprintln!("{:>5} {:>8} {:>11} {:>11} {:>7} {:>7} {:>15}", "slab#", "size", "slots", "highwater", "overs", "overa", "tot");
-	eprintln!("{:>5} {:>8} {:>11} {:>11} {:>7} {:>7} {:>15}", "-----", "----", "-----", "---------", "-----", "-----", "---");
+	// initialize elements of these to 0
+	ns.allocs_current.resize(NUM_SLABS, 0);
+	ns.allocs_total.resize(NUM_SLABS, 0);
+	ns.allocs_highwater.resize(NUM_SLABS, 0);
+	ns.slaboverflows.resize(NUM_SLABS, 0);
+	ns.areaoverflows.resize(NUM_SLABS, 0);
 
 	ns
     }
 
     fn write_stats(&mut self) {
-	writeln!(self.w, "{:>5} {:>8} {:>11} {:>11} {:>7} {:>7} {:>15}", "slab#", "size", "slots", "highwater", "overf", "overa", "tot").unwrap();
+	writeln!(self.w, "{:>5} {:>8} {:>11} {:>11} {:>7} {:>7} {:>15}", "slab#", "size", "slots", "highwater", "overs", "overa", "tot").unwrap();
 	writeln!(self.w, "{:>5} {:>8} {:>11} {:>11} {:>7} {:>7} {:>15}", "-----", "----", "-----", "---------", "-----", "-----", "---").unwrap();
 	for i in 0..OVERSIZE_SLABNUM {
-	    let hw = self.allocs_highwater[i];
 	    let slotsperslab = slabnum_to_numslots(i);
-	    let overf = hw / slotsperslab;
-	    writeln!(self.w, "{:>5} {:>8} {:>11} {:>11} {:>7} {:>7} {:>15}", i, conv(slabnum_to_slotsize(i)), slotsperslab.separate_with_commas(), hw.separate_with_commas(), overf, self.slabareaoverflows[i], self.allocs_total[i].separate_with_commas()).unwrap();
+	    writeln!(self.w, "{:>5} {:>8} {:>11} {:>11} {:>7} {:>7} {:>15}", i, conv(slabnum_to_slotsize(i)), slotsperslab.separate_with_commas(), self.allocs_highwater[i].separate_with_commas(), self.slaboverflows[i].separate_with_commas(), self.areaoverflows[i].separate_with_commas(), self.allocs_total[i].separate_with_commas()).unwrap();
 	}
 
-	writeln!(self.w, "  >{:>2} >{:>7} >{:>10} {:>11} ({:>5}) ({:>5}) {:>15}", OVERSIZE_SLABNUM-1, conv(slabnum_to_slotsize(OVERSIZE_SLABNUM-1)), slabnum_to_numslots(OVERSIZE_SLABNUM-1).separate_with_commas(), self.allocs_highwater[OVERSIZE_SLABNUM].separate_with_commas(), "N/A", "N/A", self.allocs_total[OVERSIZE_SLABNUM].separate_with_commas()).unwrap();
+	writeln!(self.w, "  >{:>2} >{:>7} {:>11} {:>11} ({:>5}) ({:>5}) {:>15}", OVERSIZE_SLABNUM-1, conv(slabnum_to_slotsize(OVERSIZE_SLABNUM-1)), "N/A", self.allocs_highwater[OVERSIZE_SLABNUM].separate_with_commas(), "N/A", "N/A", self.allocs_total[OVERSIZE_SLABNUM].separate_with_commas()).unwrap();
 
 	let mut tot_bytes_worst = 0;
 	let mut tot_bytes_smalloc = 0;
@@ -226,16 +229,23 @@ impl<W: Write> EntryConsumerTrait for Statser<W> {
 		let mut slabnum = layout_to_slabnum(*reqsiz, *reqalign);
 		assert!(slabnum < NUM_SLABS);
 
-		// Overflow of slabs:
+		assert!(self.allocs_current[slabnum] <= tot_slots_all_areas(slabnum));
+
+		// Count how many times we would have to spill over from one slab to another within the same area.
+		self.slaboverflows[slabnum] += (self.allocs_current[slabnum] + 1) / slabnum_to_numslots(slabnum);
+
+		// Now we simulate overflow of slabs, By "simulate" I mean that while the actual underlying allocator is going to do whatever it does with this request for malloc(), we're here going to choose what slab the new pointer would be in if we were using smalloc instead of the underlying allocator.
+
 		// If all slabs of this size in all areas are full...
-		assert!(self.allocs_current[slabnum] <= tot_slots(slabnum));
-		while self.allocs_current[slabnum] == tot_slots(slabnum) {
-		    // ... Then move to a new slabnum
-		    self.slabareaoverflows[slabnum] += 1;
+		while self.allocs_current[slabnum] == tot_slots_all_areas(slabnum) {
+		    // ... Then count another areaoverflow...
+		    self.areaoverflows[slabnum] += 1;
+
+		    // ... And move to a new slabnum
 		    slabnum += 1;
 		    assert!(slabnum < NUM_SLABS, "slabnum: {}, NUM_SLABS: {}, slabs[{}]: {}", slabnum, NUM_SLABS, slabnum-1, self.allocs_current[slabnum-1]); // Note that in smalloc we falsely claim that the "oversize" slab has 7 bytes worth of indexes, when in fact there is no slab there, we're just going to fall back to mmap() for things that big. We just pretend there are 2^64 slots in that slab so that this simulation will never overflow out of that slabnum.
 		}
-		assert!(self.allocs_current[slabnum] < tot_slots(slabnum));
+		assert!(self.allocs_current[slabnum] < tot_slots_all_areas(slabnum));
 
 		assert!(! self.ptr2slabnum.contains_key(resptr));
 		self.ptr2slabnum.insert(*resptr, slabnum);
@@ -258,11 +268,6 @@ impl<W: Write> EntryConsumerTrait for Statser<W> {
 
 		if self.allocs_current[slabnum] > self.allocs_highwater[slabnum] {
 		    self.allocs_highwater[slabnum] = self.allocs_current[slabnum];
-		    let numslotsperslabonearea = slabnum_to_numslots(slabnum);
-		    let numslotsperslaballareas = numslotsperslabonearea * slabnum_to_numareas(slabnum);
-		    if self.allocs_current[slabnum] % numslotsperslabonearea == 0 {
-			eprintln!("{:>5} {:>8} {:>11} {:>11} {:>7} {:>7} {:>15}", slabnum, conv(slabnum_to_slotsize(slabnum)), numslotsperslaballareas.separate_with_commas(), self.allocs_highwater[slabnum].separate_with_commas(), self.allocs_current[slabnum] / numslotsperslabonearea, self.slabareaoverflows[slabnum], self.allocs_total[slabnum].separate_with_commas());
-		    }
 		}
 	    }
 
@@ -313,13 +318,15 @@ impl<W: Write> EntryConsumerTrait for Statser<W> {
 
 		self.allocs_current[prevslabnum] -= 1;
 
-		// Now we simulate two things: 1. Promotion of growers. 2. Overflow of slabs, By "simulate" I mean that while the actual underlying allocator is going to do whatever it does with this request for realloc(), we're here going to choose a slabnum to simulate that the new pointer would be in in smalloc.
+		// Now we simulate two things: 1. Promotion of growers. 2. Overflow of slabs.
+
+		// By "simulate" I mean that while the actual underlying allocator is going to do whatever it does with this request for realloc(), we're here going to choose what slab the new pointer would be in if we were using smalloc instead of the underlying allocator.
 
 		let mut newslabnum = max(prevslabnum, layout_to_slabnum(*newsiz, *reqalign));
 		assert!(newslabnum < NUM_SLABS);
 		assert!(newslabnum >= prevslabnum);
 
-		// 1. Promote growers. Any re-allocation whose new requested size exceeds its slot size gets bumped--not to the next slabnum that is just big enough--but on to slab 14, i.e. the slots just big enough to fit into one (standard) cacheline. If it is too big too fit into 64 bytes, then just promote it directly to the "large" size (<= 6,000,000 bytes).
+		// 1. Promote growers. Any re-allocation whose new requested size exceeds its slot size gets bumped--not to the next slabnum that is just big enough--but on to slab 14, i.e. the slots just big enough to fit into one (standard) cacheline. If it is too big too fit into 64 bytes, then just promote it directly to the "large" size (<= 6,200,000 bytes).
 		if newslabnum > prevslabnum {
 		    // Okay this realloc required moving the object to a bigger slab. Therefore this is a "grower".
 		    if newslabnum <= MAX_SLABNUM_TO_FIT_INTO_CACHELINE {
@@ -330,15 +337,21 @@ impl<W: Write> EntryConsumerTrait for Statser<W> {
 		}
 
 		// 2. Overflow of slabs:
+		assert!(self.allocs_current[newslabnum] <= tot_slots_all_areas(newslabnum));
+
+		// Count how many times we would have to spill over from one slab to another within the same area.
+		self.slaboverflows[newslabnum] += (self.allocs_current[newslabnum] + 1) / slabnum_to_numslots(newslabnum);
+
 		// If all slabs of this size in all areas are full...
-		assert!(self.allocs_current[newslabnum] <= tot_slots(newslabnum));
-		while self.allocs_current[newslabnum] == tot_slots(newslabnum) {
-		    // ... Then move to a new slabnum
-		    self.slabareaoverflows[newslabnum] += 1;
+		while self.allocs_current[newslabnum] == tot_slots_all_areas(newslabnum) {
+		    // ... Then count another areaoverflow...
+		    self.areaoverflows[newslabnum] += 1;
+
+		    // ... And move to a new slabnum
 		    newslabnum += 1;
 		    assert!(newslabnum < NUM_SLABS, "newslabnum: {}, NUM_SLABS: {}, allocs_current[{}]: {}", newslabnum, NUM_SLABS, newslabnum-1, self.allocs_current[newslabnum-1]); // Note that in smalloc we falsely claim that the "oversize" slab has 7 bytes worth of indexes, when in fact there is no slab there, we're just going to fall back to mmap() for things that big. We just pretend there are 2^64 slots in that slab so that this simulation will never overflow out of that slabnum.
 		}
-		assert!(self.allocs_current[newslabnum] < tot_slots(newslabnum));
+		assert!(self.allocs_current[newslabnum] < tot_slots_all_areas(newslabnum));
 
 		// Okay now insert this into our map from (new) pointer to newslabnum.
 		assert!(! self.ptr2slabnum.contains_key(resptr));
@@ -361,14 +374,6 @@ impl<W: Write> EntryConsumerTrait for Statser<W> {
 		self.allocs_current[newslabnum] += 1;
 		if self.allocs_current[newslabnum] > self.allocs_highwater[newslabnum] {
 		    self.allocs_highwater[newslabnum] = self.allocs_current[newslabnum];
-
-		    if self.allocs_current[newslabnum] == slabnum_to_numslots(newslabnum) {
-			if newslabnum == OVERSIZE_SLABNUM {
-			    eprintln!(">{:>3} >{:10} >{:>10} {:>11} {:>15}", OVERSIZE_SLABNUM-1, conv(slabnum_to_slotsize(OVERSIZE_SLABNUM-1)), slabnum_to_numslots(OVERSIZE_SLABNUM-1), self.allocs_highwater[newslabnum].separate_with_commas(), self.allocs_total[newslabnum].separate_with_commas());
-			} else {
-			    eprintln!("{:>4} {:>11} {:>11} {:>11} {:>15}", newslabnum, conv(slabnum_to_slotsize(newslabnum)), slabnum_to_numslots(newslabnum), self.allocs_highwater[newslabnum].separate_with_commas(), self.allocs_total[newslabnum].separate_with_commas());
-			}
-		    }
 		}
 	    }
 	}
