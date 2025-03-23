@@ -179,13 +179,13 @@ impl<W:Write> Statser<W> {
     }
 
     fn write_stats(&mut self) {
-	writeln!(self.w, "{:>5} {:>8} {:>10} {:>7} {:>15}", "slab#", "size", "high", "overf", "tot").unwrap();
-	writeln!(self.w, "{:>5} {:>8} {:>10} {:>7} {:>15}", "-----", "----", "----", "-----", "---").unwrap();
+	writeln!(self.w, "{:>5} {:>8} {:>12} {:>7} {:>15}", "slab#", "size", "high", "overf", "tot").unwrap();
+	writeln!(self.w, "{:>5} {:>8} {:>12} {:>7} {:>15}", "-----", "----", "----", "-----", "---").unwrap();
 	for i in 0..OVERSIZE_SLABNUM {
-	    writeln!(self.w, "{:>5} {:>8} {:>10} {:>7} {:>15}", i, conv(slabnum_to_slotsize(i)), self.allocs_highwater[i].separate_with_commas(), self.slaboverflows[i].separate_with_commas(), self.allocs_total[i].separate_with_commas()).unwrap();
+	    writeln!(self.w, "{:>5} {:>8} {:>12} {:>7} {:>15}", i, conv(slabnum_to_slotsize(i)), self.allocs_highwater[i].separate_with_commas(), self.slaboverflows[i].separate_with_commas(), self.allocs_total[i].separate_with_commas()).unwrap();
 	}
 
-	writeln!(self.w, "  >{:>2} >{:>7} {:>10} {:>7} {:>15}", OVERSIZE_SLABNUM-1, conv(slabnum_to_slotsize(OVERSIZE_SLABNUM-1)), self.allocs_highwater[OVERSIZE_SLABNUM].separate_with_commas(), "N/A", self.allocs_total[OVERSIZE_SLABNUM].separate_with_commas()).unwrap();
+	writeln!(self.w, "  >{:>2} >{:>7} {:>12} {:>7} {:>15}", OVERSIZE_SLABNUM-1, conv(slabnum_to_slotsize(OVERSIZE_SLABNUM-1)), self.allocs_highwater[OVERSIZE_SLABNUM].separate_with_commas(), "N/A", self.allocs_total[OVERSIZE_SLABNUM].separate_with_commas()).unwrap();
 
 	let mut tot_bytes_worst = 0;
 	let mut tot_bytes_smalloc = 0;

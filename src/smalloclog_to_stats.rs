@@ -9,7 +9,7 @@ fn main() {
     let statser = Statser::new(stdo);
     let parser = Parser::new(statser);
 
-    // This returns only once stdin is permanently exhausted.
+    // This returns only once stdin is exhausted.
     slurp(stdin, parser);
 }
 
