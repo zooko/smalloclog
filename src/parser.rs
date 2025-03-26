@@ -179,19 +179,19 @@ impl<W:Write> Statser<W> {
     }
 
     fn write_stats(&mut self) {
-	writeln!(self.w, "{:>5} {:>8} {:>12} {:>7} {:>15}", "slab#", "size", "high", "overf", "tot").unwrap();
-	writeln!(self.w, "{:>5} {:>8} {:>12} {:>7} {:>15}", "-----", "----", "----", "-----", "---").unwrap();
+	writeln!(self.w, "{:>5} {:>8} {:>12} {:>11} {:>15}", "slab#", "size", "high", "overf", "tot").unwrap();
+	writeln!(self.w, "{:>5} {:>8} {:>12} {:>11} {:>15}", "-----", "----", "----", "-----", "---").unwrap();
 	for i in 0..OVERSIZE_SLABNUM {
-	    writeln!(self.w, "{:>5} {:>8} {:>12} {:>7} {:>15}", i, conv(slabnum_to_slotsize(i)), self.allocs_highwater[i].separate_with_commas(), self.slaboverflows[i].separate_with_commas(), self.allocs_total[i].separate_with_commas()).unwrap();
+	    writeln!(self.w, "{:>5} {:>8} {:>12} {:>11} {:>15}", i, conv(slabnum_to_slotsize(i)), self.allocs_highwater[i].separate_with_commas(), self.slaboverflows[i].separate_with_commas(), self.allocs_total[i].separate_with_commas()).unwrap();
 	}
 
-	writeln!(self.w, "  >{:>2} >{:>7} {:>12} {:>7} {:>15}", OVERSIZE_SLABNUM-1, conv(slabnum_to_slotsize(OVERSIZE_SLABNUM-1)), self.allocs_highwater[OVERSIZE_SLABNUM].separate_with_commas(), "N/A", self.allocs_total[OVERSIZE_SLABNUM].separate_with_commas()).unwrap();
+	writeln!(self.w, "  >{:>2} >{:>7} {:>12} {:>11} {:>15}", OVERSIZE_SLABNUM-1, conv(slabnum_to_slotsize(OVERSIZE_SLABNUM-1)), self.allocs_highwater[OVERSIZE_SLABNUM].separate_with_commas(), "N/A", self.allocs_total[OVERSIZE_SLABNUM].separate_with_commas()).unwrap();
 
 	let mut tot_bytes_worst = 0;
 	let mut tot_bytes_smalloc = 0;
 	let mut tot_bytes_saved = 0;
-        writeln!(self.w, "{:>13} {:>14} {:>14} {:>14} {:>5} {:<14}", "num", "worst case", "smalloc case", "saved", "%", "realloc hist").unwrap();
-        writeln!(self.w, "{:>13} {:>14} {:>14} {:>14} {:>5} {:<14}", "---", "----------", "------------", "-----", "-", "------------").unwrap();
+        writeln!(self.w, "{:>13} {:>16} {:>14} {:>14} {:>5} {:<14}", "num", "worst case", "smalloc case", "saved", "%", "realloc hist").unwrap();
+        writeln!(self.w, "{:>13} {:>16} {:>14} {:>14} {:>5} {:<14}", "---", "----------", "------------", "-----", "-", "------------").unwrap();
 	let mut cbs: Vec<ClosedBook> = self.cbs.drain().collect();
 	cbs.sort_unstable_by(|a, b| b.cmp(a));
 	for cb in cbs {
@@ -199,16 +199,18 @@ impl<W:Write> Statser<W> {
 	    let mcs = cb.movecostsmalloc;
 	    let saved = mcw as i64 - mcs as i64;
 	    let percsaved = (saved as f64 / mcw as f64) * 100.0;
-            writeln!(self.w, "{:>13} {:>14} {:>14} {:>14} {:>5.0}% {:<14}", cb.numlifes.separate_with_commas(), mcw.separate_with_commas(), mcs.separate_with_commas(), saved.separate_with_commas(), percsaved, cb.key).ok();
+            writeln!(self.w, "{:>13} {:>16} {:>14} {:>14} {:>5.0}% {:<14}", cb.numlifes.separate_with_commas(), mcw.separate_with_commas(), mcs.separate_with_commas(), saved.separate_with_commas(), percsaved, cb.key).ok();
 	    tot_bytes_worst += mcw;
 	    tot_bytes_smalloc += mcs;
 	    tot_bytes_saved += saved;
 	}
 
 	let totalpercsaved = (tot_bytes_saved as f64 / tot_bytes_worst as f64) * 100.0;
-	writeln!(self.w, "tot bytes moved worst-case: {:>14}, tot bytes moved smalloc: {:>14}, saved from move: {:>14}, percentage saved: {:>3.0}%", tot_bytes_worst.separate_with_commas(), tot_bytes_smalloc.separate_with_commas(), tot_bytes_saved.separate_with_commas(), totalpercsaved).ok();
+	writeln!(self.w, "tot bytes moved worst-case: {:>16}, tot bytes moved smalloc: {:>14}, saved from move: {:>14}, percentage saved: {:>3.0}%", tot_bytes_worst.separate_with_commas(), tot_bytes_smalloc.separate_with_commas(), tot_bytes_saved.separate_with_commas(), totalpercsaved).ok();
     }
 }
+
+use std::alloc::Layout;
 
 use std::cmp::max;
 use smalloc::{layout_to_slabnum};
@@ -216,7 +218,8 @@ impl<W: Write> EntryConsumerTrait for Statser<W> {
     fn consume_entry(&mut self, e: &Entry) {
 	match e {
 	    Entry::Alloc { reqsiz, reqalign, resptr } => {
-		let mut slabnum = layout_to_slabnum(*reqsiz, *reqalign);
+		let lo = Layout::from_size_align(*reqsiz, *reqalign).unwrap();
+		let mut slabnum = layout_to_slabnum(lo);
 		assert!(slabnum < NUM_SLABS);
 
 		assert!(self.allocs_current[slabnum] <= NUM_SLOTS);
@@ -300,7 +303,8 @@ impl<W: Write> EntryConsumerTrait for Statser<W> {
 
 		let prevslabnum = self.ptr2slabnum[prevptr];
 		assert!(prevslabnum < NUM_SLABS);
-		assert!(layout_to_slabnum(*prevsiz, *reqalign) <= prevslabnum); // The slab num we had this ptr in (in ptr2slabnum) was big enough to hold the prevsiz&alignment.
+		let lo = Layout::from_size_align(*prevsiz, *reqalign).unwrap();
+		assert!(layout_to_slabnum(lo) <= prevslabnum); // The slab num we had this ptr in (in ptr2slabnum) was big enough to hold the prevsiz&alignment.
 		self.ptr2slabnum.remove(prevptr);
 
 		self.allocs_current[prevslabnum] -= 1;
@@ -309,7 +313,8 @@ impl<W: Write> EntryConsumerTrait for Statser<W> {
 
 		// By "simulate" I mean that while the actual underlying allocator is going to do whatever it does with this request for realloc(), we're here going to choose what slab the new pointer would be in if we were using smalloc instead of the underlying allocator.
 
-		let mut newslabnum = max(prevslabnum, layout_to_slabnum(*newsiz, *reqalign));
+		let lo = Layout::from_size_align(*newsiz, *reqalign).unwrap();
+		let mut newslabnum = max(prevslabnum, layout_to_slabnum(lo));
 		assert!(newslabnum < NUM_SLABS);
 		assert!(newslabnum >= prevslabnum);
 

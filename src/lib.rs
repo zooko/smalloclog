@@ -11,9 +11,9 @@ use std::alloc::System;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-static LOCK: AtomicBool = AtomicBool::new(false);
-
 pub struct SmallocLog { }
+
+static LOCK: AtomicBool = AtomicBool::new(false);
 
 use std::random::random;
 
