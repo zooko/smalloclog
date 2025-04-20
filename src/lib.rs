@@ -75,10 +75,7 @@ unsafe impl GlobalAlloc for SmallocLog {
 	// Spin until this thread gets the exclusive ownership of LOCK:
 	loop {
 	    let result = LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed);
-	    match result {
-		Ok(_x) => { break; },
-		Err(_x) =>  { }
-	    }
+	    if result.is_ok() { break; }
 	}
 
 	let p = unsafe { System.alloc(layout) };
