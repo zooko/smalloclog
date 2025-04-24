@@ -1,22 +1,11 @@
 [package]
 name = "smalloclog"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 
 [dependencies]
 bytesize = "2.0.1"
 rand = "0.9.0"
-smalloc = { version = "0.1.2", path = "/Users/donaldturnworth/playground/smalloc" }
+rustc-hash = "2.1.1"
+smalloc = { version = "0.2", path = "/Users/donaldturnworth/playground/smalloc" }
 thousands = "0.2.0"
-
-[[bin]]
-name = "smalloclog_to_humanreadable"
-path = "src/smalloclog_to_humanreadable.rs"
-
-[[bin]]
-name = "smalloclog_to_stats"
-path = "src/smalloclog_to_stats.rs"
-
-[[bin]]
-name = "testsmalloclog"
-path = "src/testsmalloclog.rs"

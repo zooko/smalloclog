@@ -3,11 +3,10 @@ use rand::Rng;
 const MAX_U128: u128 = 2u128.pow(39);
 const MAX_U8: u8 = 2u8.pow(6);
 
-
 use smalloclog::SmallocLog;
 
 #[global_allocator]
-static SMALLOCLOG: SmallocLog = SmallocLog { };
+static SMALLOCLOG: SmallocLog = SmallocLog {};
 
 fn main() {
     println!("Hello, world!");
@@ -15,7 +14,12 @@ fn main() {
     let mut r = rand::rng();
 
     let num_args: usize = r.random_range(0..2usize.pow(20));
-    println!("num_args: {}, bytes for Vec<u8> of that: {}, bytes for a Vec<u128> of that: {}", num_args, num_args, num_args * 16);
+    println!(
+        "num_args: {}, bytes for Vec<u8> of that: {}, bytes for a Vec<u128> of that: {}",
+        num_args,
+        num_args,
+        num_args * 16
+    );
 
     let vu8s: Vec<u8> = (0..num_args).map(|_| r.random_range(0..MAX_U8)).collect();
     let vu128s: Vec<u128> = (0..num_args).map(|_| r.random_range(0..MAX_U128)).collect();

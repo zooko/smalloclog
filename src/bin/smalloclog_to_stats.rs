@@ -1,7 +1,7 @@
 use std::io::{self, BufWriter};
 
-mod parser;
-use parser::{Statser, Parser, slurp};
+use smalloclog::parser::{Parser, slurp};
+use smalloclog::statser::Statser;
 
 fn main() {
     let stdin = io::stdin().lock();
@@ -12,4 +12,3 @@ fn main() {
     // This returns only once stdin is exhausted.
     slurp(stdin, parser);
 }
-
