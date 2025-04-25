@@ -499,21 +499,19 @@ pub fn slurp_and_compress<R: Read, W: Write>(mut r: R, mut c: Compressor<W>) {
 //     }
 // }
 
-
-
 #[cfg(test)]
 mod tests {
 
     use std::fs::File;
 
     use super::*;
-    use atomic_dbg::{eprintln};
+    use atomic_dbg::eprintln;
     use rand::rngs::SmallRng;
 
     use rand::{Rng, SeedableRng};
 
     use thousands::Separable;
-    
+
     const CAC_CAPACITY_FOR_TESTING: usize = 3;
 
     #[test]
@@ -611,28 +609,34 @@ mod tests {
 
     #[test]
     fn test_compressor_roundtrips_v3_smalloclog() {
-        let testvectorsfile = File::open("logfiles/smalloclog.uncwjuqzibrotxxdbafjjpyfrsfapl.log").unwrap();
+        let testvectorsfile =
+            File::open("logfiles/smalloclog.uncwjuqzibrotxxdbafjjpyfrsfapl.log").unwrap();
         let mut outbuf = Vec::new();
         let compressor = Compressor::new(&mut outbuf);
-        
+
         slurp_and_compress(&testvectorsfile, compressor);
 
-//        xxx now invokew the decompressor here
+        //        xxx now invokew the decompressor here
     }
 
     #[test]
     fn test_compressor_reads_v3_smalloclog() {
-        let testvectorsfile = File::open("logfiles/smalloclog.uncwjuqzibrotxxdbafjjpyfrsfapl.log").unwrap();
+        let testvectorsfile =
+            File::open("logfiles/smalloclog.uncwjuqzibrotxxdbafjjpyfrsfapl.log").unwrap();
         let mut outbuf = Vec::new();
         let compressor = Compressor::new(&mut outbuf);
-        
+
         slurp_and_compress(&testvectorsfile, compressor);
 
         // Okay, somewhat arbitrary, but I hereby decree that Compressor is a failure if the output file is more than 40% as big as the input file. >:-D
         let inflen = testvectorsfile.metadata().unwrap().len();
         let outflen = outbuf.len();
         let ratio = (outflen as f64) / (inflen as f64);
-        eprintln!("yyy infile.len(): {}, outbuf.len(): {}", inflen.separate_with_commas(), outflen.separate_with_commas());
+        eprintln!(
+            "yyy infile.len(): {}, outbuf.len(): {}",
+            inflen.separate_with_commas(),
+            outflen.separate_with_commas()
+        );
         eprintln!("yyy ratio: {:.0}%", ratio * 100f64);
         assert!(ratio < 0.4);
     }
