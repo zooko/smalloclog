@@ -1,9 +1,11 @@
 use smalloc::MAX_ALIGNMENT;
 use std::io::Write;
 
+//use atomic_dbg::{dbg};
+
 const MSU: usize = 8; // max source usize
 
-const CAC_CAPACITY: usize = 2usize.pow(24); // come back and benchmark this with 16 bits instead of 24... what about 32 bits !?
+const CAC_CAPACITY: usize = 2usize.pow(15); // by experimentation on MacOS I couldn't fit more than 15 bits in here.
 
 use rustc_hash::FxHashMap;
 
@@ -127,7 +129,6 @@ pub fn statelessly_compress_size(size: usize) -> Vec<u8> {
     assert_eq!(SIZE_OF_USIZE, 8);
     assert_eq!(SIZE_OF_U64, 8);
 
-    assert!(size > 0);
     assert!(size <= isize::MAX as usize);
 
     // Valid sizes can require up to 9 bytes, although they'll often compress down to fewer.
@@ -410,6 +411,7 @@ impl<W: Write> Compressor<W> {
         i
     }
 
+    /// Returns the number of bytes successfully consumed.
     pub fn try_to_consume_bytes(&mut self, bs: &[u8]) -> usize {
         let mut ourbs = bs; // Our slice (reference to bs)
         let mut retval: usize = 0; // track how many bytes we consumed to return it when we're done.
@@ -443,12 +445,12 @@ impl<W: Write> Compressor<W> {
     }
 }
 
-const BUFSIZ: usize = 2usize.pow(20);
+const BUFSIZ: usize = 2usize.pow(14);
 
-use std::io::BufRead;
+use std::io::Read;
 
 /// This function doesn't return until `r` returns 0 from a call to read(). Which hopefully won't happen until we're done, ie the end of the file has been reached if `r` is a file, or the pipe has been closed if `r` is a pipe.
-pub fn slurp<R: BufRead, W: Write>(mut r: R, mut c: Compressor<W>) {
+pub fn slurp_and_compress<R: Read, W: Write>(mut r: R, mut c: Compressor<W>) {
     let mut buffer: [u8; BUFSIZ] = [0; BUFSIZ];
     let mut bytesfilled: usize = 0;
 
@@ -472,13 +474,46 @@ pub fn slurp<R: BufRead, W: Write>(mut r: R, mut c: Compressor<W>) {
     }
 }
 
+// /// This function doesn't return until `r` returns 0 from a call to read(). Which hopefully won't happen until we're done, ie the end of the file has been reached if `r` is a file, or the pipe has been closed if `r` is a pipe.
+// pub fn _slurp_and_decompress<R: Read, W: Write>(mut r: R, mut c: Decompressor<W>) {
+//     let mut buffer: [u8; BUFSIZ] = [0; BUFSIZ];
+//     let mut bytesfilled: usize = 0;
+
+//     loop {
+//         let bytesread = r.read(&mut buffer[bytesfilled..]).unwrap();
+//         if bytesread == 0 {
+//             c.done();
+//             return;
+//         }
+
+//         bytesfilled += bytesread;
+
+//         let processed = c.try_to_consume_bytes(&buffer[..bytesfilled]);
+
+//         assert!(processed <= bytesfilled);
+
+//         // Copy any leftover bytes from the end to the beginning.
+//         buffer.copy_within(processed..bytesfilled, 0);
+
+//         bytesfilled -= processed;
+//     }
+// }
+
+
+
 #[cfg(test)]
 mod tests {
-    use super::*;
 
+    use std::fs::File;
+
+    use super::*;
+    use atomic_dbg::{eprintln};
     use rand::rngs::SmallRng;
+
     use rand::{Rng, SeedableRng};
 
+    use thousands::Separable;
+    
     const CAC_CAPACITY_FOR_TESTING: usize = 3;
 
     #[test]
@@ -575,6 +610,34 @@ mod tests {
     }
 
     #[test]
+    fn test_compressor_roundtrips_v3_smalloclog() {
+        let testvectorsfile = File::open("logfiles/smalloclog.uncwjuqzibrotxxdbafjjpyfrsfapl.log").unwrap();
+        let mut outbuf = Vec::new();
+        let compressor = Compressor::new(&mut outbuf);
+        
+        slurp_and_compress(&testvectorsfile, compressor);
+
+//        xxx now invokew the decompressor here
+    }
+
+    #[test]
+    fn test_compressor_reads_v3_smalloclog() {
+        let testvectorsfile = File::open("logfiles/smalloclog.uncwjuqzibrotxxdbafjjpyfrsfapl.log").unwrap();
+        let mut outbuf = Vec::new();
+        let compressor = Compressor::new(&mut outbuf);
+        
+        slurp_and_compress(&testvectorsfile, compressor);
+
+        // Okay, somewhat arbitrary, but I hereby decree that Compressor is a failure if the output file is more than 40% as big as the input file. >:-D
+        let inflen = testvectorsfile.metadata().unwrap().len();
+        let outflen = outbuf.len();
+        let ratio = (outflen as f64) / (inflen as f64);
+        eprintln!("yyy infile.len(): {}, outbuf.len(): {}", inflen.separate_with_commas(), outflen.separate_with_commas());
+        eprintln!("yyy ratio: {:.0}%", ratio * 100f64);
+        assert!(ratio < 0.4);
+    }
+
+    #[test]
     fn test_roundtrip_stateless_alignment() {
         for i in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096] {
             let compeda = statelessly_compress_alignment(i);
@@ -585,8 +648,8 @@ mod tests {
 
     #[test]
     fn test_roundtrip_stateless_size() {
-        for i in 1..2usize.pow(10) {
-            eprintln!("t i: {}", i);
+        for i in 0..2usize.pow(10) {
+            //eprintln!("t i: {}", i);
             let compeds = statelessly_compress_size(i);
             let decompeds = statelessly_decompress_size(&compeds);
             assert_eq!(i, decompeds, "compeds: {:?}", compeds);

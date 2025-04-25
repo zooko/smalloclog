@@ -1,11 +1,10 @@
-use std::io::{self, BufWriter};
+use std::io::{self};
 
-use smalloclog::compressor::{Compressor, slurp};
+use smalloclog::compressor::{Compressor, slurp_and_compress};
 
 fn main() {
     let stdin = io::stdin().lock();
-    let stdo = BufWriter::new(std::io::stdout());
-    let compressor = Compressor::new(stdo);
+    let compressor = Compressor::new(std::io::stdout());
 
-    slurp(stdin, compressor);
+    slurp_and_compress(stdin, compressor);
 }
