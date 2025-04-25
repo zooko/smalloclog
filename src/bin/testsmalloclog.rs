@@ -21,11 +21,14 @@ fn main() {
         num_args * 16
     );
 
-    let vu8s: Vec<u8> = (0..num_args).map(|_| r.random_range(0..MAX_U8)).collect();
+    let mut vu8s: Vec<u8> = (0..num_args).map(|_| r.random_range(0..MAX_U8)).collect();
     let vu128s: Vec<u128> = (0..num_args).map(|_| r.random_range(0..MAX_U128)).collect();
 
     let i = r.random_range(0..num_args);
 
     println!("vu8s[{}] = {}", i, vu8s[i]);
     println!("vu128s[{}] = {}", i, vu128s[i]);
+
+    // resize to trigger realloc
+    vu8s.resize(num_args * 3, 3);
 }

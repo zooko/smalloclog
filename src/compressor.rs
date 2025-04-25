@@ -3,13 +3,14 @@ use std::io::Write;
 
 const MSU: usize = 8; // max source usize
 
-const CAC_CAPACITY: usize = 2usize.pow(24);
+
+const CAC_CAPACITY: usize = 2usize.pow(24); // come back and benchmark this with 16 bits instead of 24... what about 32 bits !?
 
 use rustc_hash::FxHashMap;
 
 struct CoolWordCompressor<const N: usize> {
-    idx2word: [u64; N],
-    word2idx: FxHashMap<u64, usize>,
+    idx2word: [usize; N],
+    word2idx: FxHashMap<usize, usize>,
     nexti: usize,
     filled: bool, // the first time we fill up idx2word, this gets set to true
 }
@@ -42,7 +43,7 @@ impl<const N: usize> CoolWordCompressor<N> {
     }
 
     /// Looks up word in the dict, appends it (as the new most-recently-used) if it is absent (and evicts the least-recently-used if the dict is full), or else moves it to the front (most-recently-used) slot if it is present (by swapping it with the current most-recently-used). Then it returns the "distance", which is the distance from the index that this appeared in before it was updated to the current most-recently-used index, or None if it didn't previously appear in the dict. Got that? Good.
-    fn compress_word(&mut self, word: u64) -> Option<usize> {
+    fn compress_word(&mut self, word: usize) -> Option<usize> {
         //XXX switch to .entry() to avoid one lookup in the table
         let optoldidx = self.word2idx.get(&word);
         match optoldidx {
@@ -83,7 +84,7 @@ impl<const N: usize> CoolWordCompressor<N> {
 
     /// Looks up word indicated by lookback in the dict.
     /// "lookback" is how many indexes backwards from the current most-recently-used index to fetch the word from.
-    fn decompress_word(&mut self, lookback: usize) -> u64 {
+    fn decompress_word(&mut self, lookback: usize) -> usize {
         let idx = CoolWordCompressor::<N>::wrapping_sub(self.nexti, lookback + 1);
         let word = self.idx2word[idx];
 
@@ -103,7 +104,7 @@ impl<const N: usize> CoolWordCompressor<N> {
 }
 
 /// All valid alignments can be compressed into one byte (actually
-/// just the least-significant four bits -- an integer 0-12 -- but close
+/// just the least-significant four bits -- an integer 0-12 (inclusive) -- but close
 /// enough).
 pub fn statelessly_compress_alignment(alignment: usize) -> u8 {
     assert!(alignment > 0);
@@ -119,12 +120,19 @@ pub fn statelessly_decompress_alignment(compressed_alignment: u8) -> usize {
     2usize.pow(compressed_alignment as u32)
 }
 
+const SIZE_OF_USIZE: usize = std::mem::size_of::<usize>();
+const SIZE_OF_U64: usize = std::mem::size_of::<u64>();
+
+
 use isize;
 pub fn statelessly_compress_size(size: usize) -> Vec<u8> {
+    assert_eq!(SIZE_OF_USIZE, 8);
+    assert_eq!(SIZE_OF_U64, 8);
+
     assert!(size > 0);
     assert!(size <= isize::MAX as usize);
 
-    // All valid sizes require up to 9 bytes (although they'll often compress down to fewer)
+    // Valid sizes can require up to 9 bytes, although they'll often compress down to fewer.
     let mut res: Vec<u8> = Vec::with_capacity(9);
     let mut residual = size;
     while residual >= 128 {
@@ -143,12 +151,15 @@ pub fn statelessly_decompress_size(compressed_size: &[u8]) -> usize {
 
     let mut result: usize = 0;
     let mut i: usize = 0;
-    while i < leng {
+    while (compressed_size[i] & 0b10000000) != 0 {
+        assert!(i + 1 < leng);
         //eprintln!("d cs[{}]: {}", i, compressed_size[i]);
         result += ((compressed_size[i] % 128) as usize) * (128_usize.pow(i as u32));
         //eprintln!("d result: {}", result);
         i += 1;
     }
+
+    result += (compressed_size[i] as usize) * (128_usize.pow(i as u32));
 
     result
 }
@@ -210,170 +221,253 @@ impl<W: Write> Compressor<W> {
         self.chunk_size_header
     }
 
-    //     /// Returns number of bytes successfully consumed.
-    //     fn try_to_parse_and_compress_next_entry(&self, bs: &[u8]) -> usize {
-    // 	let mut retentry: Entry;
-    // 	let mut i: usize = 0; // consumed bytes
-    // 	let sou = self.sou; // to save a few chars of reading this source code
+    /// Returns number of bytes successfully consumed.
+    fn try_to_parse_and_compress_next_entry(&mut self, bs: &[u8]) -> usize {
+	let mut i: usize = 0; // consumed bytes
+	let sou = self.sou; // to save a few chars of reading this source code
 
-    // 	if !bs.is_empty() {
-    // 	    match bs[i] {
-    // 		b'a' => {
-    // 		    if bs.len() >= self.chunk_size_alloc {
-    // 			i += 1;
+	if !bs.is_empty() {
+	    match bs[i] {
+		b'a' => {
+		    if bs.len() >= self.chunk_size_alloc {
+			i += 1;
 
-    //                         let opti = self.cwc.compress_word(&bs[i..i+sou]);
-    //                         match opti {
-    //                             None => {
-    //                                 self.w.write_all(&bs[i..i+sou]);
-    //                             }
-    //                             Some(i) => {
-    // xxx
-    //                             }
-    //                         }
-    //                         let reqsiz: [u8; MSU];
-    //                         reqsiz.copy_from_slice(&);
+                        assert_eq!(SIZE_OF_USIZE, SIZE_OF_U64);
 
-    //                         // lookup reqsize in the dict
-    //                         match self.word2num.get(reqsiz) {
-    //                             None => {
-    //                                 // insert reqsiz into the dict
-    //                             }
-    //                             Some(k) => {
-    //                             }
-    //                         }
-    //                         let k = self.word2num
+                        let reqsiz = u64::from_le_bytes(bs[i..i + sou].try_into().unwrap()) as usize;
+                        i += sou;
+                        let reqalign = u64::from_le_bytes(bs[i..i + sou].try_into().unwrap()) as usize;
+                        i += sou;
+                        let resptr = u64::from_le_bytes(bs[i..i + sou].try_into().unwrap()) as usize;
+                        i += sou;
 
-    // xxx
-    // 			i += sou;
+                        // It can take up to 18 bytes to encode a realloc event...
+                        let mut scratch = Vec::with_capacity(18);
+                        scratch.push(0); // The value 0 in the first byte -- the type byte -- (in the low-order bits of it) means this is a malloc
 
-    //                         let reqalign: [u8; MSU];
-    //                         reqalign.copy_from_slice(&bs[i..i+sou]);
-    // 			i += sou;
-    //                         let resptr: [u8; MSU];
-    //                         resptr.copy_from_slice(&bs[i..i+sou]);
-    // 			i += sou;
+                        // compress the reqsiz into the scratch buffer
+                        let creqsiz = statelessly_compress_size(reqsiz);
+                        assert!(creqsiz.len() <= 9);
+                        scratch.extend(&creqsiz);
+                        assert!(creqsiz.len() <= 10); // running max
 
-    //                         self.w.write_all(b"a");
-    // 			retentry = Entry::Alloc { reqsiz, reqalign, resptr };
+                        // compress the reqalign into the scratch buffer
+                        let creqalign = statelessly_compress_alignment(reqalign);
+                        scratch.push(creqalign);
+                        assert!(scratch.len() <= 11); // running max
 
-    //                         // 0b00 means this is an allocation event
-    //                         //xxxself.w.write_all(b[0]).unwrap();
-    // 		    }
-    // 		}
-    // 		b'd' => {
-    // 		    if bs.len() >= self.chunk_size_free {
-    // 			i += 1;
+                        // compress the resptr into the scratch buffer
+                        let optcresptr = self.cwc.compress_word(resptr);
+                        match optcresptr {
+                            None => {
+                                // resptr was not previously in the dictionary (although it is now), so we need to write it out in its entirety.
+                                // Set the high-order bit in the type byte (the first byte) to indicate that fact.
+                                scratch[0] |= 0b10000000;
+                                scratch.extend_from_slice(&resptr.to_le_bytes());
+                                assert!(scratch.len() <= 19); // running max
+                            }
+                            Some(lb) => {
+                                // resptr was previously in the dictionary with lookback number lb. So we need to write out lb, and leave the high-order bit unset to indicate that fact.
+                                let lbbytes = statelessly_compress_size(lb);
+                                assert!(lbbytes.len() <= 4);
+                                scratch.extend(&lbbytes);
+                                assert!(scratch.len() <= 15); // running max
+                            }
+                        }
 
-    // 			let oldptr: [u8; MSU];
-    //                         oldptr.copy_from_slice(&bs[i..i+sou]);
-    // 			i += sou;
+                        // write out the scratch buffer and we're done
+                        self.w.write_all(&scratch).unwrap();
+		    }
+		}
+		b'd' => {
+		    if bs.len() >= self.chunk_size_free {
+			i += 1;
 
-    // 			retentry = Entry::Free { oldptr };
-    // 		    }
-    // 		}
-    // 		b'r' => {
-    // 		    if bs.len() >= self.chunk_size_realloc {
-    // 			i += 1;
+                        let oldptr = usize::from_le_bytes(bs[i..i + sou].try_into().unwrap());
+                        i += sou;
 
-    // 			let prevptr: [u8; MSU];
-    //                         prevptr.copy_from_slice(&bs[i..i+sou]);
-    // 			i += sou;
-    // 			let prevsiz: [u8; MSU];
-    //                         prevsiz.copy_from_slice(&bs[i..i+sou]);
-    // 			i += sou;
-    // 			let reqalign: [u8; MSU];
-    //                         reqalign.copy_from_slice(&bs[i..i+sou]);
-    // 			i += sou;
-    // 			let newsiz: [u8; MSU];
-    //                         newsiz.copy_from_slice(&bs[i..i+sou]);
-    // 			i += sou;
-    // 			let resptr: [u8; MSU];
-    //                         resptr.copy_from_slice(&bs[i..i+sou]);
-    // 			i += sou;
+                        // It can take up to 9 bytes to encode a realloc event...
+                        let mut scratch = Vec::with_capacity(9);
+                        scratch.push(1); // The value 1 in the first byte -- the type byte -- (in the low-order bits of it) means this is a free
 
-    // 			retentry = Entry::Realloc { prevptr, prevsiz, reqalign, newsiz, resptr };
-    // 		    }
-    // 		}
-    // 		_ => {
-    // 		    let debugbuf = &bs[i..i+60];
-    // 		    panic!("Found something unexpected in smalloclog. i: {}, bs[i..i+60]: {:?}", i, debugbuf);
-    // 		}
-    // 	    }
-    // 	}
+                        // compress the oldptr into the scratch buffer
+                        let optcoldptr = self.cwc.compress_word(oldptr);
+                        match optcoldptr {
+                            None => {
+                                // oldptr was not previously in the dictionary (although it is now), so we need to write it out in its entirety.
+                                // Set the high-order bit in the type byte (the first byte) to indicate that fact.
+                                scratch[0] |= 0b10000000;
+                                scratch.extend_from_slice(&oldptr.to_le_bytes());
+                                assert!(scratch.len() <= 9); // running max
+                            }
+                            Some(lb) => {
+                                // oldptr was previously in the dictionary with lookback number lb. So we need to write out lb, and leave the high-order bit unset to indicate that fact.
+                                let lbbytes = statelessly_compress_size(lb);
+                                assert!(lbbytes.len() <= 4);
+                                scratch.extend(&lbbytes);
+                                assert!(scratch.len() <= 5); // running max
+                            }
+                        }
 
-    // 	(retentry, i)
-    //     }
+                        // write out the scratch buffer and we're done
+                        self.w.write_all(&scratch).unwrap();
+		    }
+		}
+		b'r' => {
+		    if bs.len() >= self.chunk_size_realloc {
+			i += 1;
 
-    //    pub fn xxx
-    //     pub fn try_to_consume_bytes(&mut self, bs: &[u8]) -> usize {
-    // 	let mut ourbs = bs; // Our slice (reference to bs)
-    // 	let mut retval: usize = 0; // track how many bytes we consumed to return it when we're done.
+                        let prevptr = u64::from_le_bytes(bs[i..i + sou].try_into().unwrap()) as usize;
+                        i += sou;
+                        let prevsiz = u64::from_le_bytes(bs[i..i + sou].try_into().unwrap()) as usize;
+                        i += sou;
+                        let reqalign = u64::from_le_bytes(bs[i..i + sou].try_into().unwrap()) as usize;
+                        i += sou;
+                        let newsiz = u64::from_le_bytes(bs[i..i + sou].try_into().unwrap()) as usize;
+                        i += sou;
+                        let resptr = u64::from_le_bytes(bs[i..i + sou].try_into().unwrap()) as usize;
+                        i += sou;
 
-    // 	if ! self.consumedheader {
+                        // It can take up to 36 bytes to encode a realloc event...
+                        let mut scratch = Vec::with_capacity(36);
+                        scratch.push(2); // The value 2 in the first byte -- the type byte -- (in the low-order bits of it) means this is a realloc
 
-    // 	    let hbs = self.try_to_consume_header_bytes(ourbs);
-    // 	    if hbs == 0 {
-    // 		return 0;
-    // 	    }
+                        // compress the prevptr into the scratch buffer
+                        let optcprevptr = self.cwc.compress_word(prevptr);
+                        match optcprevptr {
+                            None => {
+                                // prevptr was not previously in the dictionary (although it is now), so we need to write it out in its entirety.
+                                // Set the high-order bit in the type byte (the first byte) to indicate that fact.
+                                scratch[0] |= 0b10000000;
+                                scratch.extend_from_slice(&prevptr.to_le_bytes());
+                                assert!(scratch.len() <= 9); // max 9 for type byte and ptr
+                            }
+                            Some(lb) => {
+                                // prevptr was previously in the dictionary with lookback number lb. So we need to write out lb, and leave the high-order bit unset to indicate that fact.
+                                let lbbytes = statelessly_compress_size(lb);
+                                assert!(lbbytes.len() <= 4);
+                                scratch.extend(&lbbytes);
+                                assert!(scratch.len() <= 5); // max 5 for type byte and lb size
+                            }
+                        }
 
-    // 	    retval += hbs;
+                        // compress the prevsiz into the scratch buffer
+                        let cprevsiz = statelessly_compress_size(prevsiz);
+                        assert!(cprevsiz.len() <= 9);
+                        scratch.extend(&cprevsiz);
+                        assert!(scratch.len() <= 18); // running max
+                        
+                        // compress the reqalign into the scratch buffer
+                        let creqalign = statelessly_compress_alignment(reqalign);
+                        scratch.push(creqalign);
+                        assert!(scratch.len() <= 19); // running max
 
-    // 	    // Slice from the first un-consumed byte onwards.
-    // 	    ourbs = &ourbs[retval..]
-    // 	}
+                        // compress the newsiz into the scratch buffer
+                        let cnewsiz = statelessly_compress_size(newsiz);
+                        assert!(cnewsiz.len() <= 9);
+                        scratch.extend(&cnewsiz);
+                        assert!(scratch.len() <= 28); // running max
+                        
+                        // compress the resptr into the scratch buffer
+                        let optcresptr = self.cwc.compress_word(resptr);
+                        match optcresptr {
+                            None => {
+                                // resptr was not previously in the dictionary (although it is now), so we need to write it out in its entirety.
+                                // Set the secondmost-high-order bit in the type byte (the first byte) to indicate that fact.
+                                scratch[0] |= 0b01000000;
+                                scratch.extend_from_slice(&resptr.to_le_bytes());
+                                assert!(scratch.len() <= 36); // running max
+                            }
+                            Some(lb) => {
+                                // resptr was previously in the dictionary with lookback number lb. So we need to write out lb, and leave the secondmost-high-order bit unset to indicate that fact.
+                                let lbbytes = statelessly_compress_size(lb);
+                                assert!(lbbytes.len() <= 4);
+                                scratch.extend(&lbbytes);
+                                assert!(scratch.len() <= 32); // running max
+                            }
+                        }
 
-    // 	loop {
-    // 	    let (e, j) = self.try_to_parse_next_entry(ourbs);
+                        // write out the scratch buffer and we're done
+                        self.w.write_all(&scratch).unwrap();
+		    }
+		}
+		_ => {
+		    let debugbuf = &bs[i..i+60];
+		    panic!("Found something unexpected in smalloclog. i: {}, bs[i..i+60]: {:?}", i, debugbuf);
+		}
+	    }
+	}
 
-    // 	    if j == 0 {
-    // 		return retval;
-    // 	    }
+        i
+    }
 
-    // 	    ourbs = &ourbs[j..];
-    // 	    retval += j;
+    pub fn try_to_consume_bytes(&mut self, bs: &[u8]) -> usize {
+        let mut ourbs = bs; // Our slice (reference to bs)
+        let mut retval: usize = 0; // track how many bytes we consumed to return it when we're done.
 
-    // 	    self.consume_entry(&e);
-    // 	}
-    //     }
-    // }
+        if ! self.consumedheader {
+
+            let hbs = self.try_to_consume_header_bytes(ourbs);
+            if hbs == 0 {
+        	return 0;
+            }
+
+            retval += hbs;
+
+            // Slice from the first un-consumed byte onwards.
+            ourbs = &ourbs[retval..]
+        }
+
+        loop {
+            let j = self.try_to_parse_and_compress_next_entry(ourbs);
+
+            if j == 0 {
+        	return retval;
+            }
+
+            ourbs = &ourbs[j..];
+            retval += j;
+        }
+    }
+
+    pub fn done(&self) {
+        assert!(self.consumedheader);
+    }
 }
-use std::io::BufRead;
 
 const BUFSIZ: usize = 2usize.pow(20);
 
+use std::io::BufRead;
+
 /// This function doesn't return until `r` returns 0 from a call to read(). Which hopefully won't happen until we're done, ie the end of the file has been reached if `r` is a file, or the pipe has been closed if `r` is a pipe.
-pub fn slurp<R: BufRead, W: Write>(mut _r: R, mut _c: Compressor<W>) {
-    // let mut buffer: [u8; BUFSIZ] = [0; BUFSIZ];
-    // let mut bytesfilled: usize = 0;
+pub fn slurp<R: BufRead, W: Write>(mut r: R, mut c: Compressor<W>) {
 
-    // loop {
-    //     let bytesread = r.read(&mut buffer[bytesfilled..]).unwrap();
-    //     if bytesread == 0 {
-    //         c.done();
-    //         return;
-    //     }
+    let mut buffer: [u8; BUFSIZ] = [0; BUFSIZ];
+    let mut bytesfilled: usize = 0;
 
-    //     bytesfilled += bytesread;
+    loop {
+        let bytesread = r.read(&mut buffer[bytesfilled..]).unwrap();
+        if bytesread == 0 {
+            c.done();
+            return;
+        }
 
-    //     let processed = c.try_to_consume_bytes(&buffer[..bytesfilled]);
+        bytesfilled += bytesread;
 
-    //     assert!(processed <= bytesfilled);
+        let processed = c.try_to_consume_bytes(&buffer[..bytesfilled]);
 
-    //     // Copy any leftover bytes from the end to the beginning.
-    //     buffer.copy_within(processed..bytesfilled, 0);
+        assert!(processed <= bytesfilled);
 
-    //     bytesfilled -= processed;
-    // }
+        // Copy any leftover bytes from the end to the beginning.
+        buffer.copy_within(processed..bytesfilled, 0);
+
+        bytesfilled -= processed;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    //XXXuse rand::RngCore;
-    //XXXuse rand::SeedableRng;
-    //XXXuse rand::rngs::StdRng;
 
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
@@ -381,94 +475,94 @@ mod tests {
     const CAC_CAPACITY_FOR_TESTING: usize = 3;
 
     #[test]
-    fn test_cac() {
+    fn test_cwc() {
         let mut r = SmallRng::seed_from_u64(0);
 
-        let mut cac = CoolWordCompressor::<CAC_CAPACITY_FOR_TESTING>::new();
+        let mut cwc = CoolWordCompressor::<CAC_CAPACITY_FOR_TESTING>::new();
 
-        assert_eq!(cac.nexti, 0);
+        assert_eq!(cwc.nexti, 0);
 
         // insert one item! whee!
-        let a = r.random::<u64>();
+        let a = r.random::<u64>() as usize;
 
-        let opti = cac.compress_word(a);
+        let opti = cwc.compress_word(a);
         assert!(opti.is_none());
-        assert_eq!(cac.nexti, 1);
+        assert_eq!(cwc.nexti, 1);
 
         // what happens if you compress the same item again?
-        let opti2 = cac.compress_word(a);
+        let opti2 = cwc.compress_word(a);
         assert!(opti2.is_some());
         assert_eq!(opti2.unwrap(), 0);
-        assert_eq!(cac.nexti, 1);
+        assert_eq!(cwc.nexti, 1);
 
-        let deceda = cac.decompress_word(0);
+        let deceda = cwc.decompress_word(0);
         assert_eq!(deceda, a);
-        assert_eq!(cac.nexti, 1);
+        assert_eq!(cwc.nexti, 1);
 
         // a new word (which is different from the first one)
-        let mut a2 = r.random::<u64>();
+        let mut a2 = r.random::<u64>() as usize;
         while a2 == a {
-            a2 = r.random::<u64>();
+            a2 = r.random::<u64>() as usize;
         }
 
-        let opti2 = cac.compress_word(a2);
+        let opti2 = cwc.compress_word(a2);
         assert!(opti2.is_none());
 
-        assert_eq!(cac.nexti, 2);
-        let deceda2 = cac.decompress_word(0);
+        assert_eq!(cwc.nexti, 2);
+        let deceda2 = cwc.decompress_word(0);
         assert_eq!(a2, deceda2);
-        assert_eq!(cac.nexti, 2);
+        assert_eq!(cwc.nexti, 2);
 
-        let deceda_again = cac.decompress_word(1);
+        let deceda_again = cwc.decompress_word(1);
         assert_eq!(deceda_again, deceda);
-        assert_eq!(cac.nexti, 2);
+        assert_eq!(cwc.nexti, 2);
 
         // a new word (which is different from the first two)
-        let mut a3 = r.random::<u64>();
+        let mut a3 = r.random::<u64>() as usize;
         while a3 == a || a3 == a2 {
-            a3 = r.random::<u64>();
+            a3 = r.random::<u64>() as usize;
         }
 
-        let opti3 = cac.compress_word(a3);
-        assert_eq!(cac.nexti, 0); // wrapped because 3 >= CAC_CAPACITY_FOR_TESTING
+        let opti3 = cwc.compress_word(a3);
+        assert_eq!(cwc.nexti, 0); // wrapped because 3 >= CAC_CAPACITY_FOR_TESTING
         assert!(opti3.is_none());
 
         // Okay now all three of them should be in here, in this order:
         assert_eq!(
             a3,
-            cac.decompress_word(0),
-            "cac.ni: {}, a3: {:?}, cac.idx2word: {:?}, cac.word2idx: {:?}",
-            cac.nexti,
+            cwc.decompress_word(0),
+            "cwc.ni: {}, a3: {:?}, cwc.idx2word: {:?}, cwc.word2idx: {:?}",
+            cwc.nexti,
             a3,
-            cac.idx2word,
-            cac.word2idx
+            cwc.idx2word,
+            cwc.word2idx
         );
-        assert_eq!(a2, cac.decompress_word(1));
-        assert_eq!(a, cac.decompress_word(2));
+        assert_eq!(a2, cwc.decompress_word(1));
+        assert_eq!(a, cwc.decompress_word(2));
 
         // a new word (which is different from the first three)
-        let mut a4 = r.random::<u64>();
+        let mut a4 = r.random::<u64>() as usize;
         while a4 == a || a4 == a2 || a4 == a3 {
-            a4 = r.random::<u64>();
+            a4 = r.random::<u64>() as usize;
         }
 
-        let opti4 = cac.compress_word(a4);
+        let opti4 = cwc.compress_word(a4);
         assert!(opti4.is_none());
-        assert_eq!(cac.nexti, 1); // wrapped because 3 >= CAC_CAPACITY_FOR_TESTING
+        assert_eq!(cwc.nexti, 1); // wrapped because 3 >= CAC_CAPACITY_FOR_TESTING
 
         // Now all three of the most recent ones should be in here, in this order:
-        assert_eq!(a4, cac.decompress_word(0));
-        assert_eq!(a3, cac.decompress_word(1));
-        assert_eq!(a2, cac.decompress_word(2));
+        assert_eq!(a4, cwc.decompress_word(0));
+        assert_eq!(a3, cwc.decompress_word(1));
+        assert_eq!(a2, cwc.decompress_word(2));
 
         // Since we added a fourth, then the first one -- `a` -- got evicted...
-        assert!(!cac.word2idx.contains_key(&a));
-        assert_eq!(cac.idx2word.len(), CAC_CAPACITY_FOR_TESTING);
+        assert!(!cwc.word2idx.contains_key(&a));
+        assert_eq!(cwc.idx2word.len(), CAC_CAPACITY_FOR_TESTING);
 
         // Now if we re-add a3, it will become the most recent (lookback 0), swapping with a4 (which will become lookback 1)
-        let opti5 = cac.compress_word(a3);
+        let opti5 = cwc.compress_word(a3);
         assert!(opti5.is_some());
-        assert_eq!(cac.nexti, 1); // wrapped because 3 >= CAC_CAPACITY_FOR_TESTING
+        assert_eq!(cwc.nexti, 1); // wrapped because 3 >= CAC_CAPACITY_FOR_TESTING
         // The lookback that a3 *had* before we promoted it to the front was 1:
         assert_eq!(opti5.unwrap(), 1);
     }
