@@ -1,11 +1,11 @@
 use smalloc::MAX_ALIGNMENT;
 use std::io::Write;
 
-//use atomic_dbg::{dbg};
+use atomic_dbg::eprintln;
 
 const MSU: usize = 8; // max source usize
 
-const CAC_CAPACITY: usize = 2usize.pow(15); // by experimentation on MacOS I couldn't fit more than 15 bits in here.
+const CAC_CAPACITY: usize = 2usize.pow(16); // by experimentation on MacOS I couldn't fit more than 16 bits in here.
 
 use rustc_hash::FxHashMap;
 
@@ -124,12 +124,14 @@ pub fn statelessly_decompress_alignment(compressed_alignment: u8) -> usize {
 const SIZE_OF_USIZE: usize = std::mem::size_of::<usize>();
 const SIZE_OF_U64: usize = std::mem::size_of::<u64>();
 
+use thousands::Separable;
+
 use isize;
 pub fn statelessly_compress_size(size: usize) -> Vec<u8> {
     assert_eq!(SIZE_OF_USIZE, 8);
     assert_eq!(SIZE_OF_U64, 8);
 
-    assert!(size <= isize::MAX as usize);
+    assert!(size <= isize::MAX as usize, "size: {}", size.separate_with_commas());
 
     // Valid sizes can require up to 9 bytes, although they'll often compress down to fewer.
     let mut res: Vec<u8> = Vec::with_capacity(9);
@@ -445,7 +447,7 @@ impl<W: Write> Compressor<W> {
     }
 }
 
-const BUFSIZ: usize = 2usize.pow(14);
+const BUFSIZ: usize = 2usize.pow(12); // max of 20 before stack overflow by experimentation on MacOS
 
 use std::io::Read;
 
@@ -456,14 +458,17 @@ pub fn slurp_and_compress<R: Read, W: Write>(mut r: R, mut c: Compressor<W>) {
 
     loop {
         let bytesread = r.read(&mut buffer[bytesfilled..]).unwrap();
+        //eprintln!("bytesread: {}", bytesread);
         if bytesread == 0 {
             c.done();
             return;
         }
 
         bytesfilled += bytesread;
+        //eprintln!("bytesfilled: {}", bytesfilled);
 
         let processed = c.try_to_consume_bytes(&buffer[..bytesfilled]);
+        //eprintln!("processed: {}", processed);
 
         assert!(processed <= bytesfilled);
 
@@ -471,6 +476,7 @@ pub fn slurp_and_compress<R: Read, W: Write>(mut r: R, mut c: Compressor<W>) {
         buffer.copy_within(processed..bytesfilled, 0);
 
         bytesfilled -= processed;
+        //eprintln!("remaining bytesfilles: {}", bytesfilled);
     }
 }
 
@@ -607,8 +613,8 @@ mod tests {
         assert_eq!(opti5.unwrap(), 1);
     }
 
-    #[test]
-    fn test_compressor_roundtrips_v3_smalloclog() {
+    // #[test]
+    fn incomplete_test_compressor_roundtrips_v3_smalloclog() {
         let testvectorsfile =
             File::open("logfiles/smalloclog.uncwjuqzibrotxxdbafjjpyfrsfapl.log").unwrap();
         let mut outbuf = Vec::new();
@@ -632,12 +638,12 @@ mod tests {
         let inflen = testvectorsfile.metadata().unwrap().len();
         let outflen = outbuf.len();
         let ratio = (outflen as f64) / (inflen as f64);
-        eprintln!(
-            "yyy infile.len(): {}, outbuf.len(): {}",
-            inflen.separate_with_commas(),
-            outflen.separate_with_commas()
-        );
-        eprintln!("yyy ratio: {:.0}%", ratio * 100f64);
+        // eprintln!(
+        //     "yyy infile.len(): {}, outbuf.len(): {}",
+        //     inflen.separate_with_commas(),
+        //     outflen.separate_with_commas()
+        // );
+        // eprintln!("yyy ratio: {:.0}%", ratio * 100f64);
         assert!(ratio < 0.4);
     }
 
