@@ -3,7 +3,6 @@ use std::io::Write;
 
 const MSU: usize = 8; // max source usize
 
-
 const CAC_CAPACITY: usize = 2usize.pow(24); // come back and benchmark this with 16 bits instead of 24... what about 32 bits !?
 
 use rustc_hash::FxHashMap;
@@ -123,7 +122,6 @@ pub fn statelessly_decompress_alignment(compressed_alignment: u8) -> usize {
 const SIZE_OF_USIZE: usize = std::mem::size_of::<usize>();
 const SIZE_OF_U64: usize = std::mem::size_of::<u64>();
 
-
 use isize;
 pub fn statelessly_compress_size(size: usize) -> Vec<u8> {
     assert_eq!(SIZE_OF_USIZE, 8);
@@ -223,22 +221,25 @@ impl<W: Write> Compressor<W> {
 
     /// Returns number of bytes successfully consumed.
     fn try_to_parse_and_compress_next_entry(&mut self, bs: &[u8]) -> usize {
-	let mut i: usize = 0; // consumed bytes
-	let sou = self.sou; // to save a few chars of reading this source code
+        let mut i: usize = 0; // consumed bytes
+        let sou = self.sou; // to save a few chars of reading this source code
 
-	if !bs.is_empty() {
-	    match bs[i] {
-		b'a' => {
-		    if bs.len() >= self.chunk_size_alloc {
-			i += 1;
+        if !bs.is_empty() {
+            match bs[i] {
+                b'a' => {
+                    if bs.len() >= self.chunk_size_alloc {
+                        i += 1;
 
                         assert_eq!(SIZE_OF_USIZE, SIZE_OF_U64);
 
-                        let reqsiz = u64::from_le_bytes(bs[i..i + sou].try_into().unwrap()) as usize;
+                        let reqsiz =
+                            u64::from_le_bytes(bs[i..i + sou].try_into().unwrap()) as usize;
                         i += sou;
-                        let reqalign = u64::from_le_bytes(bs[i..i + sou].try_into().unwrap()) as usize;
+                        let reqalign =
+                            u64::from_le_bytes(bs[i..i + sou].try_into().unwrap()) as usize;
                         i += sou;
-                        let resptr = u64::from_le_bytes(bs[i..i + sou].try_into().unwrap()) as usize;
+                        let resptr =
+                            u64::from_le_bytes(bs[i..i + sou].try_into().unwrap()) as usize;
                         i += sou;
 
                         // It can take up to 18 bytes to encode a realloc event...
@@ -277,11 +278,11 @@ impl<W: Write> Compressor<W> {
 
                         // write out the scratch buffer and we're done
                         self.w.write_all(&scratch).unwrap();
-		    }
-		}
-		b'd' => {
-		    if bs.len() >= self.chunk_size_free {
-			i += 1;
+                    }
+                }
+                b'd' => {
+                    if bs.len() >= self.chunk_size_free {
+                        i += 1;
 
                         let oldptr = usize::from_le_bytes(bs[i..i + sou].try_into().unwrap());
                         i += sou;
@@ -311,21 +312,26 @@ impl<W: Write> Compressor<W> {
 
                         // write out the scratch buffer and we're done
                         self.w.write_all(&scratch).unwrap();
-		    }
-		}
-		b'r' => {
-		    if bs.len() >= self.chunk_size_realloc {
-			i += 1;
+                    }
+                }
+                b'r' => {
+                    if bs.len() >= self.chunk_size_realloc {
+                        i += 1;
 
-                        let prevptr = u64::from_le_bytes(bs[i..i + sou].try_into().unwrap()) as usize;
+                        let prevptr =
+                            u64::from_le_bytes(bs[i..i + sou].try_into().unwrap()) as usize;
                         i += sou;
-                        let prevsiz = u64::from_le_bytes(bs[i..i + sou].try_into().unwrap()) as usize;
+                        let prevsiz =
+                            u64::from_le_bytes(bs[i..i + sou].try_into().unwrap()) as usize;
                         i += sou;
-                        let reqalign = u64::from_le_bytes(bs[i..i + sou].try_into().unwrap()) as usize;
+                        let reqalign =
+                            u64::from_le_bytes(bs[i..i + sou].try_into().unwrap()) as usize;
                         i += sou;
-                        let newsiz = u64::from_le_bytes(bs[i..i + sou].try_into().unwrap()) as usize;
+                        let newsiz =
+                            u64::from_le_bytes(bs[i..i + sou].try_into().unwrap()) as usize;
                         i += sou;
-                        let resptr = u64::from_le_bytes(bs[i..i + sou].try_into().unwrap()) as usize;
+                        let resptr =
+                            u64::from_le_bytes(bs[i..i + sou].try_into().unwrap()) as usize;
                         i += sou;
 
                         // It can take up to 36 bytes to encode a realloc event...
@@ -356,7 +362,7 @@ impl<W: Write> Compressor<W> {
                         assert!(cprevsiz.len() <= 9);
                         scratch.extend(&cprevsiz);
                         assert!(scratch.len() <= 18); // running max
-                        
+
                         // compress the reqalign into the scratch buffer
                         let creqalign = statelessly_compress_alignment(reqalign);
                         scratch.push(creqalign);
@@ -367,7 +373,7 @@ impl<W: Write> Compressor<W> {
                         assert!(cnewsiz.len() <= 9);
                         scratch.extend(&cnewsiz);
                         assert!(scratch.len() <= 28); // running max
-                        
+
                         // compress the resptr into the scratch buffer
                         let optcresptr = self.cwc.compress_word(resptr);
                         match optcresptr {
@@ -389,14 +395,17 @@ impl<W: Write> Compressor<W> {
 
                         // write out the scratch buffer and we're done
                         self.w.write_all(&scratch).unwrap();
-		    }
-		}
-		_ => {
-		    let debugbuf = &bs[i..i+60];
-		    panic!("Found something unexpected in smalloclog. i: {}, bs[i..i+60]: {:?}", i, debugbuf);
-		}
-	    }
-	}
+                    }
+                }
+                _ => {
+                    let debugbuf = &bs[i..i + 60];
+                    panic!(
+                        "Found something unexpected in smalloclog. i: {}, bs[i..i+60]: {:?}",
+                        i, debugbuf
+                    );
+                }
+            }
+        }
 
         i
     }
@@ -405,11 +414,10 @@ impl<W: Write> Compressor<W> {
         let mut ourbs = bs; // Our slice (reference to bs)
         let mut retval: usize = 0; // track how many bytes we consumed to return it when we're done.
 
-        if ! self.consumedheader {
-
+        if !self.consumedheader {
             let hbs = self.try_to_consume_header_bytes(ourbs);
             if hbs == 0 {
-        	return 0;
+                return 0;
             }
 
             retval += hbs;
@@ -422,7 +430,7 @@ impl<W: Write> Compressor<W> {
             let j = self.try_to_parse_and_compress_next_entry(ourbs);
 
             if j == 0 {
-        	return retval;
+                return retval;
             }
 
             ourbs = &ourbs[j..];
@@ -441,7 +449,6 @@ use std::io::BufRead;
 
 /// This function doesn't return until `r` returns 0 from a call to read(). Which hopefully won't happen until we're done, ie the end of the file has been reached if `r` is a file, or the pipe has been closed if `r` is a pipe.
 pub fn slurp<R: BufRead, W: Write>(mut r: R, mut c: Compressor<W>) {
-
     let mut buffer: [u8; BUFSIZ] = [0; BUFSIZ];
     let mut bytesfilled: usize = 0;
 
